@@ -1,6 +1,7 @@
 """Price Book: supplier quotes -> one CSV row per quoted line item.
 
-    python3 pricebook/price_book.py append <quotes.json> <price_book.csv>      # add/refresh rows, rewrite whole file
+    python3 pricebook/price_book.py append <quotes.json> <folder>               # monthly files (preferred)
+    python3 pricebook/price_book.py append <quotes.json> <price_book.csv>      # single file
     python3 pricebook/price_book.py latest <price_book.csv> [--item TEXT] [--days N]
     python3 pricebook/price_book.py movers <price_book.csv> [--days 90] [--min-pct 3]
     python3 pricebook/price_book.py check  <quotes.json>                        # validate only, no write
@@ -14,7 +15,9 @@ quotes.json = a list of quotes (or one quote object):
    "lines": [{"item": "brick modular", "product": "as written", "manufacturer": "...", "size_color": "...",
               "qty": 90000, "unit": "M", "unit_price": 800, "price_per_sf": 5.52, "notes": "..."}]}
 
-Writes two files: <price_book.csv> (one row per line item) and its companion 'Price Book Quotes <year>.csv'
+Folder mode writes 'Price Book YYYY-MM.csv' (by quote month) + 'Price Book Quotes YYYY-MM.csv', and price lists to
+'Price Lists YYYY.csv' + 'Price Lists Quotes YYYY.csv'; it prints exactly which files changed (upload those).
+Single-file mode writes two files: <price_book.csv> (one row per line item) and its companion 'Price Book Quotes <year>.csv'
 (one row per quote: link, freight, quote ref) joined on quote_key.
 Rows are keyed by source_id + line number, so re-running the same quote replaces its rows (never duplicates).
 `latest` = y on the newest row per supplier + item + unit + size_color.
@@ -181,7 +184,80 @@ def read_quotes(path):
     return data if isinstance(data, list) else [data]
 
 
+def is_dir_target(path):
+    import os
+    return os.path.isdir(path) or not path.lower().endswith(".csv")
+
+
+def bucket(r):
+    """Folder layout: 'Price Book YYYY-MM.csv' per quote month; price lists in 'Price Lists YYYY.csv'."""
+    if r["project"].lower().startswith("price list"):
+        return f"Price Lists {r['quote_date'][:4]}.csv"
+    return f"Price Book {r['quote_date'][:7]}.csv"
+
+
+def load_folder(folder):
+    import glob, os
+    rows, qrows = [], []
+    for f in sorted(glob.glob(os.path.join(folder, "Price *.csv"))):
+        if " Quotes " in os.path.basename(f):
+            qrows += load_csv(f)
+        else:
+            rows += load_csv(f)
+    return rows, qrows
+
+
+def cmd_append_folder(a):
+    import os
+    os.makedirs(a.csv, exist_ok=True)
+    new, qnew, problems = flatten(read_quotes(a.quotes))
+    for p in problems:
+        print("⚠ not written — " + p)
+    newkeys = {q["quote_key"] for q in qnew}
+    rows, qrows = load_folder(a.csv)
+    before = {}
+    for r in rows:
+        before.setdefault(r["quote_key"], bucket(r))
+    rows = [r for r in rows if r["quote_key"] not in newkeys] + new
+    qrows = [q for q in qrows if q["quote_key"] not in newkeys] + qnew
+    mark_latest(rows)
+    qb = {}
+    for r in rows:
+        qb.setdefault(r["quote_key"], bucket(r))
+    touched = {qb[k] for k in newkeys} | {before[k] for k in newkeys if k in before}
+    # 'latest' flags can flip in older months too: rewrite any file whose content changed
+    files = {}
+    for r in rows:
+        files.setdefault(bucket(r), []).append(r)
+    changed = []
+    for name, rs in sorted(files.items()):
+        path = os.path.join(a.csv, name)
+        old = open(path, encoding="utf-8").read() if os.path.exists(path) else None
+        write_csv(rs, path)
+        qname = name.replace("Price Book", "Price Book Quotes").replace("Price Lists", "Price Lists Quotes")
+        qpath = os.path.join(a.csv, qname)
+        keys = {r["quote_key"] for r in rs}
+        oldq = open(qpath, encoding="utf-8").read() if os.path.exists(qpath) else None
+        write_csv([q for q in qrows if q["quote_key"] in keys], qpath, QCOLS, "quote_key")
+        for pth, o in ((path, old), (qpath, oldq)):
+            if o != open(pth, encoding="utf-8").read():
+                changed.append((os.path.basename(pth), os.path.getsize(pth)))
+    for name in touched - set(files):
+        print(f"⚠ {name} now empty — delete it")
+    print(f"Price Book: +{len(new)} lines from {len(newkeys)} quotes; {len(rows)} lines / {len(qrows)} quotes")
+    print("Upload these files (whole, replace):")
+    for n, sz in changed:
+        print(f"  {n}  ({sz // 1024} KB)" + ("  ⚠ over 900 KB" if sz > 900_000 else ""))
+    return 1 if problems else 0
+
+
+def all_rows(path):
+    return load_folder(path)[0] if is_dir_target(path) else load_csv(path)
+
+
 def cmd_append(a):
+    if is_dir_target(a.csv):
+        return cmd_append_folder(a)
     new, qnew, problems = flatten(read_quotes(a.quotes))
     for p in problems:
         print("⚠ not written — " + p)
@@ -210,7 +286,7 @@ def cmd_check(a):
 
 
 def cmd_latest(a):
-    rows = [r for r in load_csv(a.csv) if r["latest"] == "y"]
+    rows = [r for r in all_rows(a.csv) if r["latest"] == "y"]
     if a.item:
         rx = re.compile(a.item, re.I)
         rows = [r for r in rows if rx.search(" ".join([r["item"], r["product"], r["size_color"], r["manufacturer"]]))]
@@ -226,7 +302,7 @@ def cmd_latest(a):
 
 
 def cmd_movers(a):
-    rows = load_csv(a.csv)
+    rows = all_rows(a.csv)
     groups = defaultdict(list)
     for r in rows:
         if r["unit_price"] and r["unit"] != "LS" and r["item"] not in ("other", "delivery", "fuel surcharge") and "allowance" not in r["notes"].lower():

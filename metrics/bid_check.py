@@ -40,10 +40,14 @@ def main():
            f"OH {r['oh_pct']:.0%} / profit {r['profit_pct']:.0%}"]
     if r["reconciles"] != "y":
         out.append(f"⚠ export does not reconcile — {r['reconcile_notes']}. Not added to history.")
+    wv = r.get("wages_vs_standard")
+    if wv is not None and abs(wv) > 0.01:
+        out.append(f"⚠ Wage rates {abs(wv):.0%} {'above' if wv > 0 else 'below'} standard ({r['wages']}; standard "
+                   + " / ".join(f"{k} {v:g}" for k, v in m.STD_WAGES.items()) + "). Labor $/SF below includes that.")
     gap = r["crew_vs_takeoff_labor"] - 1
     if abs(gap) > CREW_GAP:
-        out.append(f"⚠ Crew Page labor is {abs(gap):.0%} {'below' if gap < 0 else 'above'} the item labor "
-                   f"(${r['crew_vs_takeoff_labor'] * 100:.1f} per $100). Rates below use the Crew Page (what's in the price).")
+        out.append(f"⚠ Crew Page labor is {abs(gap):.0%} {'below' if gap < 0 else 'above'} the line-item labor — check the crew mix. "
+                   "Rates below use the Crew Page (what's in the price).")
     if r["unmapped_items"]:
         out.append(f"⚠ items not in Cost Map (counted as other): {r['unmapped_items']}")
 

@@ -11,6 +11,7 @@ import argparse, csv, json, re, sys
 import xml.etree.ElementTree as ET
 
 SS = "urn:schemas-microsoft-com:office:spreadsheet"
+STD_WAGES = {"Bricklayer": 30.0, "Forman": 65.0, "Labor": 20.0, "Operator": 27.0}   # $/hr, the house standard
 UNIT_TYPES = ["cmu_gray", "cmu_arch", "brick", "stone", "cast_stone"]
 OTHER = ["insulation", "scaffold", "other_items"]
 
@@ -112,6 +113,11 @@ def grand_totals(wb):
     for r in wb["Material"]:
         if len(r) > 16 and r[11].strip() == "Totals:":
             g["labor_base_total"], g["material_sheet_total"] = num(r[12]), num(r[16])
+    g["wages"] = {}
+    for r in wb.get("Crew Page", []):
+        c = [x.strip() for x in r if x.strip()]
+        if len(c) >= 7 and c[0] in STD_WAGES:
+            g["wages"][c[0]] = round(num(c[-1]), 2)
     g["job_title"] = (wb["Grand Totals"][0] + [""] * 6)[4].strip()
     jn = [c for c in wb["Grand Totals"][0] if c.strip()]
     g["job_number"] = jn[-1] if jn else ""
@@ -129,7 +135,7 @@ def to_compact(path):
     g = grand_totals(wb)
     return {"job_title": g["job_title"], "job_number": g["job_number"],
             "rows": [[r[k] for k in COMPACT_ROW] for r in material_rows(wb)],
-            "totals": {k: g.get(k, 0) for k in COMPACT_TOTALS}}
+            "totals": {k: g.get(k, 0) for k in COMPACT_TOTALS}, "wages": g.get("wages", {})}
 
 
 def load(path):
@@ -142,6 +148,7 @@ def load(path):
             r["qty_units"] = r.get("qty_units") or ""
         g = {k: num(c["totals"].get(k, 0)) for k in COMPACT_TOTALS}
         g["job_title"], g["job_number"] = c.get("job_title", ""), c.get("job_number", "")
+        g["wages"] = {k: num(v) for k, v in c.get("wages", {}).items()}
         return rows, g
     wb = sheets(path)
     return material_rows(wb), grand_totals(wb)
@@ -221,6 +228,10 @@ def compute(path, map_path, project="", bid_id=""):
     total = sold + row["equipment_sell"] + row["misc_sell"] + row["subs_sell"] + row["cleaning_sell"]
     row["bucketed_total"] = round(total)
     row["crew_vs_takeoff_labor"] = round(crew_ratio, 3)
+    w = g.get("wages", {})
+    row["wages"] = " / ".join(f"{k} {w[k]:g}" for k in STD_WAGES if k in w)
+    diffs = [w[k] / STD_WAGES[k] - 1 for k in STD_WAGES if w.get(k)]
+    row["wages_vs_standard"] = round(sum(diffs) / len(diffs), 3) if diffs else None
     # Three checks catch a bad transcription or a misread export: rows sum to the sheet totals, and the
     # Grand Totals parts sum to the bid price. Buckets themselves always sum by construction.
     parts = sum(g.get(k, 0) for k in ("mat_total", "crew_total", "equip_total", "misc_total", "sub_total", "clean_total"))

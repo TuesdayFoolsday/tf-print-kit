@@ -17,12 +17,14 @@ Input format and item vocabulary: docstring at the top of `pricebook/price_book.
 
 ## Dashboard
 
-    python3 pricebook/price_book.py export "Price Book/" "Price Book Latest.csv"   # Friday: latest prices + changes
+    python3 pricebook/price_book.py export "Price Book/" "Price Book Latest.csv"   # Friday: also writes Price Movers.csv
     python3 dashboard/build_dashboard.py --bid-log "Bid Log 2026.csv" --bid-metrics "Bid Metrics 2026.csv" \
-        --prices "Price Book Latest.csv" [--job-cost "Job Cost History.csv"] --out Dashboard.xlsx
+        --prices "Price Movers.csv" --job-cost "Job Cost History.csv" --out Dashboard.xlsx --data "Dashboard Data.txt"
 
-Builds the workbook with live formulas, recalculates it in LibreOffice, checks every formula and re-checks the
-headline numbers in Python. Last line says whether to upload.
+`Dashboard.xlsx` (Excel tables + live formulas) is placed in SharePoint once. Each night only `Dashboard Data.txt`
+(JSON, text) is uploaded; a Power Automate flow runs `dashboard/load_dashboard_data.ts` (Office Script) to load it
+into the workbook's tables. The build recalculates a copy in LibreOffice, scans every formula and cross-checks the
+headline numbers before saying "Upload: yes".
 
 ## Job cost history
 

@@ -1,0 +1,198 @@
+/* Fenimore-Blythe proposal — print stylesheet (Letter, 96 px/in)
+   Rendered by Chromium via Playwright with Paged.js for pagination.
+   Pages 1 (cover) and 2 (terms) are fixed layouts. Page 3+ (scope) flows and
+   breaks onto as many pages as it needs; the running header/footer live in the
+   @page margin boxes so every scope page carries them. */
+
+/* ---------- fonts (self-hosted; no network at render time) ---------- */
+@font-face { font-family: "Barlow"; font-weight: 400; src: url("fonts/barlow-latin-400-normal.woff2") format("woff2"); }
+@font-face { font-family: "Barlow"; font-weight: 500; src: url("fonts/barlow-latin-500-normal.woff2") format("woff2"); }
+@font-face { font-family: "Barlow"; font-weight: 600; src: url("fonts/barlow-latin-600-normal.woff2") format("woff2"); }
+@font-face { font-family: "Barlow"; font-weight: 700; src: url("fonts/barlow-latin-700-normal.woff2") format("woff2"); }
+@font-face { font-family: "Barlow Condensed"; font-weight: 600; src: url("fonts/barlow-condensed-latin-600-normal.woff2") format("woff2"); }
+@font-face { font-family: "Barlow Condensed"; font-weight: 700; src: url("fonts/barlow-condensed-latin-700-normal.woff2") format("woff2"); }
+@font-face { font-family: "Barlow Condensed"; font-weight: 800; src: url("fonts/barlow-condensed-latin-800-normal.woff2") format("woff2"); }
+@font-face { font-family: "IBM Plex Mono"; font-weight: 500; src: url("fonts/ibm-plex-mono-latin-500-normal.woff2") format("woff2"); }
+@font-face { font-family: "IBM Plex Mono"; font-weight: 600; src: url("fonts/ibm-plex-mono-latin-600-normal.woff2") format("woff2"); }
+
+/* ---------- tokens ---------- */
+:root {
+  --ink: #111111;
+  --ink-2: #222222;
+  --ink-3: #333333;
+  --muted: #6B6B6B;
+  --rule: #CFCFCF;
+  --green: #189E4C;       /* brand green (logo) */
+  --green-deep: #0F6B35;  /* labels on white */
+  --sans: "Barlow", "Segoe UI", Arial, sans-serif;
+  --cond: "Barlow Condensed", "Arial Narrow", sans-serif;
+  --mono: "IBM Plex Mono", Consolas, monospace;
+  --gutter: 56px;
+}
+
+html, body { margin: 0; padding: 0; background: #fff; }
+body { font-family: var(--sans); color: var(--ink); font-size: 12.5px; line-height: 1.4; -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+* { box-sizing: border-box; }
+p { margin: 0; }
+
+/* ---------- pages ---------- */
+@page { size: letter; margin: 0; }
+
+@page cover { margin: 0; }
+@page terms { margin: 0; }
+
+/* scope pages: running header + footer in the @page margin boxes.
+   Paged.js rules: ONE string()/counter() per content:, so literals come in via Jinja. */
+@page scope {
+  margin: 0.62in 0 0.55in 0;
+  @top-left   { content: "FENIMORE-BLYTHE  ·  COMMERCIAL MASONRY"; color: #111111; font-family: var(--cond); font-weight: 700; font-size: 15px; letter-spacing: 0.04em; padding-left: var(--gutter); vertical-align: middle; }
+  @top-right  { content: string(runhead); color: #555555; font-family: var(--mono); font-size: 11px; padding-right: var(--gutter); vertical-align: middle; text-align: right; white-space: nowrap; }
+  @bottom-left  { content: "Forms part of the Fenimore-Blythe proposal dated {{ bid.date }} · to be included in its entirety in any contract for masonry work · NCTRCA SBE # {{ company.sbe_cert_no }}"; font-family: var(--sans); font-size: 10px; color: #6B6B6B; padding-left: var(--gutter); padding-right: 24px; vertical-align: top; padding-top: 8px; }
+  @bottom-right { content: "Page " counter(page) " of {{ page_total }}"; font-family: var(--mono); font-size: 10px; color: #6B6B6B; padding-right: var(--gutter); vertical-align: top; padding-top: 8px; text-align: right; }
+}
+/* paint the band on the whole margin row and resize the thirds Paged.js imposes */
+.pagedjs_scope_page .pagedjs_margin-top { background: #FFFFFF; grid-template-columns: 55% 0 45%; border-bottom: 5px solid var(--green); }
+.pagedjs_scope_page .pagedjs_margin-bottom { grid-template-columns: 80% 0 20% !important; border-top: 1px solid var(--rule); }
+.pagedjs_scope_page .pagedjs_margin-top { grid-template-columns: 45% 0 55% !important; }
+.pagedjs_scope_page .pagedjs_margin-bottom-left .pagedjs_margin-content { white-space: normal; }
+.pagedjs_scope_page .pagedjs_margin-content { white-space: nowrap; }  /* Paged.js forces white-space:normal inline on the box; the content div is ours */
+
+.sheet { width: 816px; height: 1055px; overflow: hidden; display: flex; flex-direction: column; break-after: page; }
+.sheet.cover { page: cover; }
+.sheet.terms { page: terms; }
+.scope { page: scope; break-before: page; padding: 10px var(--gutter) 0 var(--gutter); }
+
+/* running strings picked up by the scope-page margin boxes */
+.runhead { string-set: runhead content(text); }
+.run-hidden { display: block; height: 0; overflow: hidden; font-size: 1px; line-height: 0; color: transparent; }
+
+/* ---------- masthead (page 1) ---------- */
+.mast { background: var(--ink); color: #fff; padding: 26px var(--gutter) 24px; display: flex; justify-content: space-between; align-items: center; gap: 24px; }
+.mast-left { display: flex; align-items: center; gap: 18px; }
+.mast-left img { width: 72px; height: 68px; object-fit: contain; }
+.mast-name { font-family: var(--cond); font-weight: 700; font-size: 34px; line-height: 1; letter-spacing: 0.02em; }
+.mast-tag { font-size: 11px; letter-spacing: 0.28em; text-transform: uppercase; margin-top: 6px; color: #D9D9D9; }
+.mast-addr { font-size: 11px; margin-top: 8px; color: #D9D9D9; line-height: 1.5; }
+.mast-addr b { color: #fff; font-weight: 600; }
+.sbe { background: var(--green); color: #000; padding: 12px 18px; text-align: right; flex: 0 0 auto; }
+.sbe-big { font-family: var(--cond); font-weight: 800; font-size: 28px; line-height: 1; letter-spacing: 0.02em; }
+.sbe-sub { font-size: 11px; font-weight: 700; letter-spacing: 0.08em; text-transform: uppercase; margin-top: 4px; }
+.sbe-no { font-family: var(--mono); font-size: 11.5px; font-weight: 600; margin-top: 4px; }
+
+.band { background: var(--green); color: #000; padding: 6px var(--gutter); display: flex; justify-content: space-between; align-items: center; gap: 16px; font-size: 11px; font-weight: 700; letter-spacing: 0.1em; text-transform: uppercase; white-space: nowrap; }
+.band .mono { font-family: var(--mono); font-weight: 600; font-size: 10.5px; letter-spacing: 0.02em; text-transform: none; }
+
+/* slim masthead (page 2) */
+.mast-slim { background: var(--ink); color: #fff; padding: 12px var(--gutter); display: flex; justify-content: space-between; align-items: center; gap: 24px; }
+.mast-slim .brand { display: flex; align-items: center; gap: 12px; font-family: var(--cond); font-weight: 700; font-size: 20px; line-height: 1; letter-spacing: 0.02em; white-space: nowrap; flex: 0 0 auto; }
+.mast-slim .brand img { width: 30px; height: 28px; object-fit: contain; }
+.mast-slim .brand span { font-weight: 600; color: #D9D9D9; font-size: 14px; letter-spacing: 0.12em; }
+.mast-slim .meta { font-family: var(--mono); font-size: 11px; color: #D9D9D9; text-align: right; }
+.band-slim { background: var(--green); color: #000; padding: 5px var(--gutter); display: flex; justify-content: space-between; font-size: 10.5px; font-weight: 700; letter-spacing: 0.1em; text-transform: uppercase; }
+
+/* ---------- page 1 body ---------- */
+.body { padding: 26px var(--gutter) 34px; display: flex; flex-direction: column; flex: 1 1 0; }
+.title-row { display: flex; justify-content: space-between; align-items: flex-end; gap: 24px; }
+.proj-name { font-family: var(--cond); font-weight: 800; font-size: 40px; line-height: 0.95; letter-spacing: 0.01em; text-transform: uppercase; }
+.proj-sub { font-size: 13px; margin-top: 6px; color: var(--ink-3); }
+.docs { display: grid; grid-template-columns: auto auto; gap: 3px 14px; font-size: 11.5px; line-height: 1.4; align-items: baseline; }
+.docs .k { text-align: right; font-size: 10.5px; letter-spacing: 0.08em; text-transform: uppercase; color: var(--muted); font-weight: 600; }
+.docs .v { text-align: right; font-family: var(--mono); font-weight: 500; color: var(--ink); }
+
+.bid { margin-top: 20px; border: 2px solid var(--ink); display: grid; grid-template-columns: minmax(0, 1.4fr) minmax(0, 1fr); }
+.bid-main { padding: 14px 20px 12px; border-right: 2px solid var(--ink); }
+.bid-lead { font-size: 10.5px; letter-spacing: 0.12em; text-transform: uppercase; color: var(--green-deep); font-weight: 700; }
+.bid-amt { font-family: var(--mono); font-weight: 600; font-size: 38px; line-height: 1.05; margin-top: 6px; letter-spacing: -0.01em; }
+.bid-words { font-size: 12px; color: var(--ink-3); margin-top: 4px; }
+.bid-tax { font-size: 11.5px; color: var(--ink-3); margin-top: 6px; border-top: 1px solid var(--rule); padding-top: 6px; }
+.bid-tax b { color: var(--ink); }
+.bid-side { display: grid; grid-auto-rows: minmax(0, 1fr); }
+.bid-side .row { display: flex; justify-content: space-between; align-items: center; padding: 0 18px; border-bottom: 1px solid var(--rule); }
+.bid-side .row:last-child { border-bottom: 0; }
+.bid-side .k { font-size: 11px; letter-spacing: 0.08em; text-transform: uppercase; color: var(--muted); font-weight: 600; }
+.bid-side .v { font-family: var(--mono); font-weight: 600; font-size: 15px; }
+.bid-side .v small { font-family: var(--sans); font-weight: 500; font-size: 11px; color: var(--muted); }
+
+.parties { margin-top: 20px; display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 0 20px; border-top: 1px solid var(--ink); border-bottom: 1px solid var(--rule); padding: 10px 0; font-size: 12px; line-height: 1.45; }
+.lbl { font-family: var(--cond); font-weight: 700; font-size: 13px; letter-spacing: 0.12em; text-transform: uppercase; color: var(--green-deep); }
+.parties .n { font-weight: 700; margin-top: 2px; }
+.parties .d { color: var(--ink-3); }
+.parties .d.small { font-size: 11px; }
+
+.terms-sum { margin-top: 18px; }
+.terms-sum .head { display: flex; justify-content: space-between; align-items: baseline; gap: 16px; }
+.terms-sum .note { font-size: 11px; color: var(--ink-3); }
+.terms-grid { margin-top: 8px; display: grid; grid-template-columns: 112px minmax(0, 1fr) 112px minmax(0, 1fr); gap: 8px 14px; font-size: 12px; line-height: 1.45; color: var(--ink-2); }
+.terms-grid .k { font-weight: 700; }
+
+.spacer { flex: 1 1 0; }
+.sign { border-top: 2px solid var(--ink); padding-top: 10px; display: flex; justify-content: space-between; align-items: flex-end; gap: 16px; }
+.sign .name { font-family: var(--cond); font-weight: 700; font-size: 20px; line-height: 1; }
+.sign .who { font-size: 11.5px; color: var(--ink-3); margin-top: 3px; }
+.sign .pg { font-size: 10.5px; color: var(--muted); text-align: right; line-height: 1.5; }
+
+/* ---------- page 2 terms ---------- */
+.terms-body { padding: 22px var(--gutter) 28px; display: flex; flex-direction: column; gap: 11px; flex: 1 1 0; color: #1A1A1A; text-align: justify; font-size: 12px; line-height: 1.45; }
+.terms-body h1 { font-family: var(--cond); font-weight: 800; font-size: 28px; line-height: 1; text-transform: uppercase; letter-spacing: 0.01em; text-align: left; margin: 0; }
+.terms-body .clause::before { content: attr(data-label); color: var(--green-deep); text-transform: uppercase; font-size: 11px; letter-spacing: 0.1em; font-family: var(--cond); font-weight: 700; margin-right: 6px; }
+.terms-body .sign { text-align: left; }
+.terms-body .sign .sincerely { font-size: 11px; color: var(--muted); text-transform: uppercase; letter-spacing: 0.08em; }
+
+/* ---------- page 3+ scope ---------- */
+.sec { margin-top: 14px; break-inside: avoid; }
+.sec:first-child { margin-top: 0; }
+.sec-head { display: flex; align-items: baseline; gap: 12px; border-bottom: 2px solid var(--ink); padding-bottom: 4px; margin-bottom: 8px; break-after: avoid; }
+.sec-head h2 { font-family: var(--cond); font-weight: 800; font-size: 22px; line-height: 1; text-transform: uppercase; margin: 0; }
+.sec-head .note { font-size: 11px; color: var(--ink-3); }
+.cols { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 0 28px; }
+ol.fb { margin: 0; padding: 0 0 0 22px; font-size: 11.5px; line-height: 1.38; color: #1A1A1A; }
+ol.fb li { padding-left: 2px; margin: 0 0 2px; break-inside: avoid; }
+ol.fb li::marker { font-family: var(--mono); font-size: 10px; color: var(--muted); }
+
+.alt { display: grid; grid-template-columns: 52px minmax(0, 1fr); gap: 2px 8px; font-size: 11.5px; line-height: 1.38; color: #1A1A1A; break-inside: avoid; margin-bottom: 8px; }
+.alt .no { font-family: var(--mono); font-weight: 600; font-size: 11px; color: var(--green-deep); }
+.alt .t { font-weight: 700; }
+.alt .k { font-size: 10px; letter-spacing: 0.08em; text-transform: uppercase; color: var(--muted); font-weight: 600; text-align: right; }
+
+/* Paged.js preview only (screen) */
+@media screen { body { background: #e9e9e9; } .pagedjs_page { background: #fff; margin: 12px auto; box-shadow: 0 2px 10px rgba(0,0,0,.15); } }
+
+
+/* ---------- white masthead with the real logo (2026-10-29) ---------- */
+.mast { background: #fff; color: var(--ink); padding: 24px var(--gutter) 16px; align-items: center; }
+.mast-logo img { width: 300px; height: auto; display: block; }
+.mast-addr { color: #555; margin-top: 10px; font-size: 10.5px; }
+.mast-addr b { color: var(--ink); }
+.sbe { background: #fff; border: 2px solid var(--green); color: var(--ink); padding: 9px 14px; text-align: right; }
+.sbe-big { font-size: 19px; color: var(--green-deep); }
+.sbe-sub { font-size: 9.5px; color: #444; margin-top: 3px; }
+.sbe-no { font-size: 10.5px; color: var(--ink); margin-top: 3px; }
+.band { background: var(--ink); color: #fff; border-top: 4px solid var(--green); padding: 7px var(--gutter); }
+.band .mono { color: #D9D9D9; }
+.mast-slim { background: #fff; color: var(--ink); border-bottom: 4px solid var(--green); padding: 10px var(--gutter); }
+.mast-slim .brand-logo img { width: 170px; height: auto; display: block; }
+.mast-slim .meta { color: #555; }
+
+/* never split a phone number or email across lines */
+.nw { white-space: nowrap; }
+/* section spacing as padding (Paged.js drops top margins at page breaks), so a section
+   that starts a new page sits the same distance below the band as the first one */
+.scope { padding-top: 0; }
+.sec { margin-top: 0; padding-top: 14px; }
+/* page-1 signature block: left column never wraps; page notes take the remaining width */
+.cover .sign > div:first-child { flex: 0 0 auto; white-space: nowrap; }
+.cover .sign .pg { flex: 1 1 auto; min-width: 0; }
+/* page 1 readability: larger type in parties + key terms, more air between blocks */
+.parties { margin-top: 26px; padding: 14px 0; font-size: 14px; line-height: 1.5; gap: 0 24px; }
+.parties .d.small { font-size: 13px; }
+.terms-sum { margin-top: 28px; }
+.terms-sum .note { font-size: 12px; }
+.terms-grid { margin-top: 12px; grid-template-columns: 124px minmax(0, 1fr) 124px minmax(0, 1fr); gap: 12px 16px; font-size: 13.5px; line-height: 1.5; }
+.parties { margin-top: 22px; padding: 12px 0; font-size: 13.5px; line-height: 1.45; }
+.parties .d.small { font-size: 12.5px; }
+.terms-sum { margin-top: 22px; }
+.terms-grid { gap: 9px 16px; font-size: 13px; line-height: 1.45; }
+.cover .sign { margin-top: 14px; }
+/* dollar amounts: Barlow Condensed (plain zero) instead of IBM Plex Mono (dotted zero) */
+.bid-amt { font-family: var(--cond); font-weight: 700; font-size: 46px; letter-spacing: 0.01em; font-variant-numeric: tabular-nums lining-nums; }
+.bid-side .v { font-family: var(--cond); font-weight: 700; font-size: 19px; letter-spacing: 0.01em; font-variant-numeric: tabular-nums lining-nums; }

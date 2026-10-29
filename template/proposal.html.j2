@@ -1,0 +1,206 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>{{ company.short }} Proposal — {{ project.name }} — Rev {{ bid.rev }}</title>
+<link rel="stylesheet" href="proposal.css">
+<script src="vendor/paged.polyfill.js"></script>
+</head>
+<body>
+
+{# ============================ PAGE 1 — PROPOSAL ============================ #}
+<section class="sheet cover">
+  <header class="mast">
+    <div class="mast-left">
+      <div>
+        <div class="mast-logo"><img src="assets/fb-logo.png" alt="{{ company.name_caps }} Commercial Masonry"></div>
+        <div class="mast-addr">Est. {{ company.est }} · {{ company.address }} · <b>{{ company.phone }}</b><br>{{ signer.email }} · {{ company.website }}</div>
+      </div>
+    </div>
+    <div class="sbe">
+      <div class="sbe-big">NCTRCA CERTIFIED SBE</div>
+      <div class="sbe-sub">Small Business Enterprise</div>
+      <div class="sbe-no">Cert # {{ company.sbe_cert_no }} · Exp. {{ company.sbe_cert_exp }}</div>
+    </div>
+  </header>
+  <div class="band">
+    <span>Masonry Proposal &amp; Scope of Work</span>
+    <span class="mono">Rev {{ bid.rev }} · Bid {{ bid.date }} · {{ bid.time }} · Valid through {{ bid.valid_through }}</span>
+  </div>
+
+  <div class="body">
+    <div class="title-row">
+      <div>
+        <div class="proj-name">{{ project.name }}</div>
+        <div class="proj-sub">{{ project.address }}{% if project.arch_project_no %} · Architect Proj. # {{ project.arch_project_no }}{% endif %}</div>
+      </div>
+      <div class="docs">
+        <div class="k">Plans dated</div><div class="v">{{ bid.plans_dated }}</div>
+        <div class="k">Addenda</div><div class="v">{{ bid.addenda_text }}</div>
+        <div class="k">Divisions</div><div class="v">{{ bid.divisions }}</div>
+      </div>
+    </div>
+
+    <div class="bid">
+      <div class="bid-main">
+        <div class="bid-lead">We propose to complete the Masonry Work per the Contract Documents for</div>
+        <div class="bid-amt">$ {{ bid.base_bid | money }}</div>
+        <div class="bid-words">{{ bid.base_bid | words }} Dollars</div>
+        <div class="bid-tax">{% if bid.sales_tax_included %}<b>Texas sales tax INCLUDED.</b>{% else %}<b>Sales tax on incorporated materials EXCLUDED</b> — Owner tax-exempt; materials purchased tax-free upon receipt of the Owner's Texas Sales and Use Tax Exemption Certificate. Tax on non-incorporated items (equipment, tools, consumables) INCLUDED.{% endif %}</div>
+      </div>
+      <div class="bid-side">
+        {% for a in bid.alternates %}
+        <div class="row"><span class="k">Alternate {{ a.no }}</span><span class="v">{{ a.amount | signed_money }}</span></div>
+        {% endfor %}
+        <div class="row"><span class="k">P&amp;P Bond (if req'd)</span><span class="v">$ {{ bid.bond_amount | money }} <small>on Base Bid</small></span></div>
+      </div>
+    </div>
+
+    <div class="parties">
+      <div>
+        <div class="lbl">Submitted to (CM/GC)</div>
+        <div class="n">{{ gc.name }}</div>
+        {% if gc.contact %}<div class="d">Attn: {{ gc.contact }}</div>{% endif %}
+        <div class="d">{{ gc.address }}</div>
+        {% if gc.phone %}<div class="d">{{ gc.phone }}</div>{% endif %}
+        {% if gc.email %}<div class="d small">{{ gc.email }}</div>{% endif %}
+      </div>
+      <div>
+        <div class="lbl">Owner</div>
+        <div class="n">{{ owner.name }}</div>
+        {% for line in owner.address_lines %}<div class="d">{{ line }}</div>{% endfor %}
+      </div>
+      <div>
+        <div class="lbl">Architect</div>
+        <div class="n">{{ architect.name }}</div>
+        {% for line in architect.address_lines %}<div class="d">{{ line }}</div>{% endfor %}
+        {% if architect.phone %}<div class="d">{{ architect.phone }}</div>{% endif %}
+      </div>
+    </div>
+
+    <div class="terms-sum">
+      <div class="head">
+        <div class="lbl">Key terms — summary</div>
+        <div class="note">Full Terms &amp; Conditions on page 2 govern and form part of this proposal.</div>
+      </div>
+      <div class="terms-grid">
+        <div class="k">Mobilization</div><div>One (1) included. Each additional, through no fault of FB: <strong>${{ terms.remob_fee | money }}</strong> change order.</div>
+        <div class="k">Payment</div><div>Monthly by the 15th. Public work: Tex. Gov't Code §2251.022–.023, 12% interest (§2251.025). Private work: Tex. Prop. Code Ch. 28, 1.5%/month (§28.004). Final within 45 days.</div>
+        <div class="k">Retainage</div><div>Only if specified in bid documents or agreed in contract; not more than 5%.</div>
+        <div class="k">Validity</div><div>Void if not accepted by subcontract or LOI by <strong>{{ bid.valid_through }}</strong> (30 days from bid date).</div>
+        <div class="k">Equipment</div><div>FB equipment and scaffold for FB personnel only; use by others requires signed agreement and COI.</div>
+        <div class="k">Warranty</div><div>One (1) year, labor and materials. No overtime included. Breakouts for accounting only.</div>
+      </div>
+    </div>
+
+    <div class="spacer"></div>
+
+    <div class="sign">
+      <div>
+        <div class="name">{{ signer.name }}</div>
+        <div class="who">{{ signer.title }}, {{ company.legal_name }}</div>
+        <div class="who"><span class="nw">{{ signer.cell }}</span> · <span class="nw">{{ signer.email }}</span></div>
+      </div>
+      <div class="pg">
+        <div>Page 1 of {{ page_total }} · Terms &amp; Conditions (p. 2) · Inclusions{% if bid.alternates %}, Alternates{% endif %}, Exclusions &amp; Qualifications (p. 3{% if scope_pages > 1 %}–{{ 2 + scope_pages }}{% endif %}){% if bid.attach_cert %} · NCTRCA SBE Certificate (p. {{ page_total }}){% endif %}</div>
+        <div>This proposal is to be included in its entirety in any contract for masonry work.</div>{% if bid.supersedes is not none %}
+        <div class="nw">Rev {{ bid.rev }} supersedes Rev {{ bid.supersedes }} in its entirety.</div>{% endif %}
+      </div>
+    </div>
+  </div>
+</section>
+
+{# ============================ PAGE 2 — TERMS (verbatim) ============================ #}
+<section class="sheet terms">
+  <header class="mast-slim">
+    <div class="brand"><span class="brand-logo"><img src="assets/fb-logo.png" alt="{{ company.name_caps }} Commercial Masonry"></span></div>
+    <div class="meta">{{ project.name }} · Rev {{ bid.rev }} · Bid {{ bid.date }} · Page 2 of {{ page_total }}</div>
+  </header>
+  <div class="band-slim">
+    <span>Terms &amp; Conditions of Proposal</span>
+    <span>NCTRCA Certified SBE · Cert # {{ company.sbe_cert_no }}</span>
+  </div>
+
+  <div class="terms-body">
+    <h1>Terms &amp; Conditions</h1>
+
+    <p class="clause" data-label="Mobilization">This Proposal assumes that we will be able to complete the Masonry portion of our work in no more than One (1) Mobilization, therefore the building must be in a state of readiness to accept Masonry. If More than One (1) Mobilization is required to complete the Masonry through no fault of Fenimore-Blythe, then each additional Mobilization will incur a Change Order to the Contract in the Amount of {{ terms.remob_fee | words }} Dollars (${{ terms.remob_fee | money }}.00) for each additional Mobilization.</p>
+
+    <p class="clause" data-label="Acceptance &amp; Warranty">In order that you may have a complete understanding of our proposal, we have prepared the scope clarification sheet for your consideration and review. We request that any CONTRACT FOR MASONRY WORK should include this PROPOSAL in its entirety. The utilization of our bid hereby constitutes the acceptance of the terms and conditions listed and outlined below. This proposal is contingent on our right to review, modify and/or negotiate the subcontract agreement. All work is warranted against defects in Labor and/or Materials for a period of one (1) year. This warranty does not include repair work for materials improperly maintained, abused, neglected, damaged, or subject to normal wear and tear.</p>
+
+    <p class="clause" data-label="Taxes &amp; Scope">{% if bid.sales_tax_included %}Our proposal INCLUDES all applicable taxes &amp; insurance and the masonry or masonry related items listed under Masonry Inclusions (page 3). All Sales Taxes Included.{% else %}Our proposal INCLUDES all applicable insurance and the masonry or masonry related items listed under Masonry Inclusions (page 3). Sales tax on materials incorporated into the work is EXCLUDED on the basis that the Owner is a tax-exempt entity; those materials will be purchased tax-free upon receipt of the Owner's properly executed Texas Sales and Use Tax Exemption Certificate. Sales tax on non-incorporated items (equipment, tools and consumables), which are not exempt, is INCLUDED.{% endif %} Our proposal DOES NOT INCLUDE the items and/or activities listed under Masonry Exclusions and is based on OUR COMPANY being PROVIDED by others, at no cost to us, the services and/or items listed under Qualifications, which are therefore EXCLUDED from this proposal.</p>
+
+    <p class="clause" data-label="Equipment">This proposal is conditional upon the use, of any and all equipment supplied by our company (including, but not limited to, scaffolding, tools, supplies, materials, power cords, electrical appliances and any other supplies or materials of any kind provided by us) ("Equipment") solely by the personnel of this company and/or it's designated agents or sub-subcontractors. In the event any other person or entity (including the Project Owner, Contractor, any other subcontractor, or any other party) desires to use any such "Equipment", such use shall be solely at our discretion and, prior to any use, and as a condition precedent to any such use, the party or parties which will be using such Equipment shall, at no cost to us, (1) execute an Agreement (in a form provided by us) governing the use of such Equipment, and (2) shall supply a Certificate of Insurance, naming Fenimore-Blythe Commercial Masonry, LLC and its officers, directors, agents and assigns as additional insured's and waiving subrogation as to any claims or damages related to the use of such "Equipment".</p>
+
+    <p class="clause" data-label="Access &amp; Documents">Our proposal is based on being provided reasonable access to all work areas, and sufficient areas to work in to allow masonry work to proceed at an optimum rate in accordance with the time schedule mutually agreed upon. We request that the General Contractor furnish us with one complete set of contract documents for contract review and one additional set for Construction.</p>
+
+    <p class="clause" data-label="Payment">Periodic Payments are to be made monthly, by the 15th of each month, based on the value of Stored Materials &amp; Work Completed the previous month. Funds past due, according to the "Prompt Pay Act", Texas Government Code Section, (2251.022 &amp; 023), states that payment is due within 10 days from payment by owner to GC, then will become subject to the legal interest rate of 12% per annum prescribed by Law (Section 2251.025). On privately owned projects, payment is governed by the Texas Prompt Payment Act, Texas Property Code Chapter 28: payment is due to us not later than the seventh (7th) day after the Contractor receives payment from the Owner (Section 28.002), and unpaid amounts accrue interest at one and one-half percent (1.5%) per month (Section 28.004). Final payment is to be made within 45 days after satisfactory completion and acceptance of the work. Retainage percentage will only be allowed if the Bid Documents specify it, and/or it is Agreed on in the Contract, and then no more than five (5%) percent will be allowed.</p>
+
+    <p class="clause" data-label="Validity">Breakouts are for accounting purposes only, unless otherwise indicated. This proposal is void, if not accepted by issuance of a subcontract or letter of intent within 30 days of the bid date shown herein (on or before {{ bid.valid_through }}). Subsequent to the thirty day maturity of this proposal, we reserve the right to either WITHDRAW or INCREASE the amount of our bid. This proposal is based on doing the Masonry. No overtime has been calculated into this project and is therefore excluded.</p>
+
+    <p>We are grateful for the opportunity to submit our quotation to you. Should you need further information, please, contact us.</p>
+
+    <div class="spacer"></div>
+
+    <div class="sign">
+      <div>
+        <div class="sincerely">Sincerely,</div>
+        <div class="name" style="margin-top:4px">{{ signer.name }}</div>
+        <div class="who">{{ signer.title }}, {{ company.legal_name }} · {{ company.phone }} · {{ signer.email }}</div>
+      </div>
+      <div class="pg"><div>{{ company.address }}</div><div>Page 2 of {{ page_total }}</div></div>
+    </div>
+  </div>
+</section>
+
+{# ============================ PAGE 3+ — SCOPE (flows; breaks as needed) ============================ #}
+<section class="scope">
+  <span class="run-hidden"><span class="runhead">{{ project.name }} · Rev {{ bid.rev }} · Bid {{ bid.date }}</span></span>
+
+  <div class="sec">
+    <div class="sec-head"><h2>Masonry Inclusions</h2><div class="note">Furnished and installed by Fenimore-Blythe.{% if bid.sales_tax_included %} All applicable taxes &amp; insurance included.{% endif %}</div></div>
+    <div class="cols">
+      {% set half = (scope.inclusions | length + 1) // 2 %}
+      <ol class="fb">{% for it in scope.inclusions[:half] %}<li>{{ it }}</li>{% endfor %}</ol>
+      <ol class="fb" start="{{ half + 1 }}">{% for it in scope.inclusions[half:] %}<li>{{ it }}</li>{% endfor %}</ol>
+    </div>
+  </div>
+
+  {% if bid.alternates %}
+  <div class="sec">
+    <div class="sec-head"><h2>Alternates</h2><div class="note">Priced on page 1. Each alternate modifies the Base Bid scope only as stated below; all other Inclusions, Exclusions and Qualifications remain in force.</div></div>
+    <div class="cols">
+      {% for a in bid.alternates %}
+      <div class="alt">
+        <div class="no">ALT {{ a.no }}</div><div class="t">{{ a.title }}</div>
+        {% if a.add %}<div class="k">Add</div><div>{{ a.add }}</div>{% endif %}
+        {% if a.delete %}<div class="k">Delete</div><div>{{ a.delete }}</div>{% endif %}
+        {% if a.qualify %}<div class="k">Qualify</div><div>{{ a.qualify }}</div>{% endif %}
+      </div>
+      {% endfor %}
+    </div>
+  </div>
+  {% endif %}
+
+  <div class="sec">
+    <div class="sec-head"><h2>Masonry Exclusions</h2><div class="note">Our proposal DOES NOT INCLUDE the following items and/or activities.</div></div>
+    <div class="cols">
+      {% set half = (scope.exclusions | length + 1) // 2 %}
+      <ol class="fb">{% for it in scope.exclusions[:half] %}<li>{{ it }}</li>{% endfor %}</ol>
+      <ol class="fb" start="{{ half + 1 }}">{% for it in scope.exclusions[half:] %}<li>{{ it }}</li>{% endfor %}</ol>
+    </div>
+  </div>
+
+  <div class="sec">
+    <div class="sec-head"><h2>Qualifications</h2><div class="note">Based on our Company being PROVIDED by others the following services and/or items at no cost to us.</div></div>
+    <div class="cols">
+      {% set half = (scope.qualifications | length + 1) // 2 %}
+      <ol class="fb">{% for it in scope.qualifications[:half] %}<li>{{ it }}</li>{% endfor %}</ol>
+      <ol class="fb" start="{{ half + 1 }}">{% for it in scope.qualifications[half:] %}<li>{{ it }}</li>{% endfor %}</ol>
+    </div>
+  </div>
+
+</section>
+
+</body>
+</html>

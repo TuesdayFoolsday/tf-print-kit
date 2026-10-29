@@ -5,7 +5,7 @@
     python3 pricebook/price_book.py latest <price_book.csv> [--item TEXT] [--days N]
     python3 pricebook/price_book.py movers <price_book.csv> [--days 90] [--min-pct 3]
     python3 pricebook/price_book.py check  <quotes.json>                        # validate only, no write
-    python3 pricebook/price_book.py export <folder> <out.csv> [--days 90]       # latest rows + change vs prior quote
+    python3 pricebook/price_book.py export <folder> <out.csv> [--days 90]       # latest rows + change vs prior quote; also Price Movers.csv beside it
 
 quotes.json = a list of quotes (or one quote object):
   {"source_id": "<email message id or file item id>", "source_url": "<webLink/webUrl>",
@@ -376,7 +376,12 @@ def cmd_export(a):
         w = csv.DictWriter(f, fieldnames=LATEST_COLS, lineterminator="\n")
         w.writeheader(); w.writerows(out)
     import os
-    print(f"{len(out)} latest rows ({sum(r['mover'] == 'y' for r in out)} movers) -> {a.out} ({os.path.getsize(a.out) // 1024} KB)")
+    mpath = os.path.join(os.path.dirname(os.path.abspath(a.out)), "Price Movers.csv")
+    with open(mpath, "w", newline="", encoding="utf-8") as f:
+        w = csv.DictWriter(f, fieldnames=LATEST_COLS, lineterminator="\n")
+        w.writeheader(); w.writerows(r for r in out if r["mover"] == "y")
+    print(f"{len(out)} latest rows ({sum(r['mover'] == 'y' for r in out)} movers) -> {a.out} ({os.path.getsize(a.out) // 1024} KB)"
+          f" + {mpath} ({os.path.getsize(mpath)} bytes, movers only — the Dashboard reads this one)")
 
 
 def main():

@@ -1,9 +1,10 @@
 """Build the preconstruction Dashboard workbook from the bid CSVs. Data tabs hold values; every summary is a live formula.
 
     python3 dashboard/build_dashboard.py --bid-log "Bid Log 2026.csv" --bid-metrics "Bid Metrics 2026.csv" \
-        [--prices "Price Book Latest.csv"] [--job-cost "Job Cost History.csv"] [--out Dashboard.xlsx] [--no-recalc]
+        [--prices "Price Movers.csv"] [--job-cost "Job Cost History.csv"] [--out Dashboard.xlsx] [--no-recalc]
 
-Price Book Latest.csv comes from `pricebook/price_book.py export <folder> <out.csv>`.
+Price Movers.csv is written beside Price Book Latest.csv by `pricebook/price_book.py export <folder> <out.csv>`
+(the Dashboard lists the movers; the full latest-price list stays in the CSV).
 After building, LibreOffice recalculates the file (so the stored values are current for anything that reads them),
 then the script checks every formula for errors and re-checks the headline numbers against plain Python.
 Exit 1 = do not upload.
@@ -139,7 +140,8 @@ def style_body(ws, r0, r1, c0, c1):
 def build(a):
     bl = read_csv(a.bid_log)
     bm = read_csv(a.bid_metrics)
-    prices = read_csv(a.prices) if a.prices and os.path.exists(a.prices) else []
+    have_prices = bool(a.prices and os.path.exists(a.prices))
+    prices = read_csv(a.prices) if have_prices else []
     jc = read_csv(a.job_cost) if a.job_cost and os.path.exists(a.job_cost) else []
     raw2grp, merges = gc_groups(bl)
     warn = []
@@ -148,46 +150,39 @@ def build(a):
     dash = wb.active; dash.title = "Dashboard"
     bygc = wb.create_sheet("By GC")
     lh = wb.create_sheet("Labor History")
-    pr = wb.create_sheet("Prices")
     jcs = wb.create_sheet("Job Cost")
     bls = wb.create_sheet("Bid Log")
-    bms = wb.create_sheet("Bid Metrics")
     about = wb.create_sheet("About")
 
-    # --- Bid Log data tab (values + one live in_period flag) ---
-    cols = ["bid_id", "project", "city", "job_type", "gc", "gc_group", "bid_date", "status", "submitted_amount",
-            "base_bid", "alternates_total", "tax", "submitted_date", "winner", "winning_amount", "in_period"]
-    head(bls, 1, 1, cols, [26, 40, 16, 12, 30, 26, 11, 11, 13, 13, 12, 14, 11, 20, 13, 9])
+    # --- Bid Log data tab (only the columns the formulas use + one live in_period flag) ---
+    cols = ["bid_id", "project", "job_type", "gc_group", "bid_date", "status", "submitted_amount", "in_period"]
+    head(bls, 1, 1, cols, [26, 40, 12, 26, 11, 11, 13, 9])
+    # bid_id/project are for reading only; the formulas use C:H
     n_bl = len(bl)
     for i, r in enumerate(bl, start=2):
         gc = (r["gc"] or "").strip()
-        vals = [r["bid_id"], r["project"], r["city"], r["job_type"] or "unknown", gc,
-                raw2grp.get(gc, "(unknown)"), day(r["bid_date"]), r["status"], num(r["submitted_amount"]),
-                num(r["base_bid"]), num(r["alternates_total"]), r["tax"], day(r["submitted_date"]), r["winner"],
-                num(r["winning_amount"])]
+        vals = [r["bid_id"], r["project"], r["job_type"] or "unknown", raw2grp.get(gc, "(unknown)"), day(r["bid_date"]),
+                r["status"], num(r["submitted_amount"])]
         for j, v in enumerate(vals, start=1):
             c = bls.cell(i, j, v)
             if isinstance(v, dt.date):
                 c.number_format = DATE
             elif isinstance(v, float):
                 c.number_format = MONEY
-        bls.cell(i, 16, f'=IF(G{i}="",IF(Dashboard!$C$4="All",1,0),IF(G{i}>=Dashboard!$C$5,1,0))')
+        bls.cell(i, 8, f'=IF(E{i}="",IF(Dashboard!$C$4="All",1,0),IF(E{i}>=Dashboard!$C$5,1,0))')
     bls.freeze_panes = "C2"
-    bls.auto_filter.ref = f"A1:P{n_bl + 1}"
+    bls.auto_filter.ref = f"A1:H{n_bl + 1}"
     last = n_bl + 1
     BL = lambda col: f"'Bid Log'!${col}$2:${col}${last}"
-    ST, AMT, INP, JT, GG, BD = BL("H"), BL("I"), BL("P"), BL("D"), BL("F"), BL("G")
-
-    # --- Bid Metrics raw tab ---
-    mcols = list(bm[0].keys()) if bm else []
-    head(bms, 1, 1, mcols)
-    for i, r in enumerate(bm, start=2):
-        for j, k in enumerate(mcols, start=1):
-            v = r[k]
-            nv = num(v) if k not in ("bid_id", "project", "job_number", "source", "wages", "reconciles",
-                                     "reconcile_notes", "unmapped_items", "notes", "matches_bid_log") else None
-            bms.cell(i, j, nv if nv is not None else (v if v != "" else None))
-    bms.freeze_panes = "C2"
+    from openpyxl.workbook.defined_name import DefinedName
+    names = {"Status": "F", "Amount": "G", "InPeriod": "H", "JobType": "C", "GC": "D", "BidDate": "E"}
+    for nm, col in names.items():
+        dn = DefinedName(nm, attr_text=BL(col))
+        if hasattr(wb.defined_names, "add"):
+            wb.defined_names.add(dn)
+        else:
+            wb.defined_names[nm] = dn
+    ST, AMT, INP, JT, GG, BD = "Status", "Amount", "InPeriod", "JobType", "GC", "BidDate"
 
     # --- Labor History (one row per estimate; linked to the Bid Log by bid_id, else by bid price) ---
     lcols = ["Project", "Job #", "Job type", "Bid date", "Bid price", "In Bid Log", "Wages", "Wages vs std", "Notes"]
@@ -243,31 +238,10 @@ def build(a):
     LH = lambda col: f"'Labor History'!${col}$2:${col}${n_lh + 1}"
     style_body(lh, 2, n_lh + 1, 1, len(lcols))
 
-    # --- Prices tab (values from Price Book Latest.csv) ---
-    pcols = [("item", "Item", 22), ("supplier", "Supplier", 26), ("product", "Product", 36), ("size_color", "Size / color", 20),
-             ("unit", "Unit", 6), ("unit_price", "Unit price", 11), ("price_per_sf", "$/SF", 8), ("quote_date", "Quote date", 11),
-             ("project", "Project", 28), ("hold_until", "Price hold", 11), ("prior_price", "Prior price", 11),
-             ("prior_date", "Prior date", 11), ("change_pct", "Change", 8), ("mover", "Mover", 6), ("notes", "Notes", 30)]
-    head(pr, 1, 1, [p[1] for p in pcols], [p[2] for p in pcols])
-    pfmt = {"unit_price": RATE, "price_per_sf": RATE, "prior_price": RATE, "change_pct": PCT,
-            "quote_date": DATE, "prior_date": DATE, "hold_until": DATE}
-    for i, r in enumerate(prices, start=2):
-        for j, (k, _, _) in enumerate(pcols, start=1):
-            v = r.get(k, "")
-            if k in ("unit_price", "price_per_sf", "prior_price", "change_pct"):
-                v = num(v)
-            elif k in ("quote_date", "prior_date", "hold_until"):
-                v = day(v) or (v or None)
-            else:
-                v = v or None
-            c = pr.cell(i, j, v)
-            if k in pfmt:
-                c.number_format = pfmt[k]
     n_pr = len(prices)
-    pr.freeze_panes = "C2"
-    pr.auto_filter.ref = f"A1:{L(len(pcols))}{max(n_pr, 1) + 1}"
-    if not prices:
-        warn.append("Prices: no Price Book Latest.csv given — Prices tab empty")
+    prices = [p for p in prices if p.get("mover") == "y"]
+    if not have_prices:
+        warn.append("Prices: no Price Movers.csv given — movers section empty")
 
     # --- Job Cost tab (values from Job Cost History.csv) ---
     jcols = ["job_number", "estimate", "scope", "through_date", "status", "est_sf", "est_mandays", "act_mandays",
@@ -300,7 +274,7 @@ def build(a):
         ws.column_dimensions[col].width = w
     put(ws, "A1", "Preconstruction Dashboard", font=F_TITLE)
     put(ws, "A2", f"Rebuilt {a.stamp} from Bid Log 2026.csv ({n_bl} rows), Bid Metrics 2026.csv ({len(bm)} estimates)"
-        + (f", Price Book Latest.csv ({n_pr} prices)" if prices else "") + ". Don't edit — it is rebuilt nightly.", font=F_NOTE)
+        + (f", Price Movers.csv ({n_pr} rows)" if have_prices else "") + ". Don't edit — it is rebuilt nightly.", font=F_NOTE)
     put(ws, "A4", "Period (pick)", font=F_BOLD)
     c = put(ws, "C4", a.period, font=F_INPUT); c.fill = FILL_INPUT
     dv = DataValidation(type="list", formula1='"' + ",".join(PERIODS) + '"', allow_blank=False)
@@ -403,10 +377,10 @@ def build(a):
         for col in "ABCDEFGHIJ":
             ws[f"{col}{r}"].border = THIN
     if not movers:
-        put(ws, f"A{m0 + 2}", "None." if prices else "Price Book Latest.csv not supplied.", font=F_NOTE)
+        put(ws, f"A{m0 + 2}", "None." if have_prices else "Price Movers.csv not supplied.", font=F_NOTE)
     put(ws, f"A{m0 + 3 + max(len(movers[:a.movers]), 1)}",
-        f"{len(movers)} movers of {n_pr} latest prices; full list on the Prices tab (filter Mover = y). "
-        "Prices refresh with the Friday sweep.", font=F_NOTE)
+        f"{len(movers)} movers. Every latest price: _Knowledge/Price Book/Price Book Latest.csv (filter mover = y). "
+        "Refreshed with the Friday sweep.", font=F_NOTE)
     j0 = m0 + 5 + max(len(movers[:a.movers]), 1)
     put(ws, f"A{j0}", "Actual vs estimate — closed-out jobs (Job Cost tab)", font=F_SECTION)
     head(ws, j0 + 1, 1, ["", "Jobs", "Median man-day var", "Median labor $ var", "", "", "", "", "", ""])
@@ -447,7 +421,7 @@ def build(a):
     ws.column_dimensions["A"].width = 120
     lines = [("About this workbook", F_SECTION),
              (f"Rebuilt {a.stamp} by dashboard/build_dashboard.py (print kit). Rebuilt nightly; edits are overwritten.", F_BASE),
-             ("Sources: _Knowledge/Bid Log 2026.csv · _Knowledge/Bid Metrics 2026.csv · _Knowledge/Price Book/Price Book Latest.csv (written by the Friday sweep).", F_BASE),
+             ("Sources: _Knowledge/Bid Log 2026.csv · _Knowledge/Bid Metrics 2026.csv · _Knowledge/Job Cost History.csv · _Knowledge/Price Book/Price Movers.csv (written by the Friday sweep).", F_BASE),
              ("Hit rate = won ÷ (won + lost) by bid date. Submitted-awaiting and closed bids are shown, never counted in the rate.", F_BASE),
              ("Labor $/SF = Crew Page base wage spread across unit types by line-item labor (before burden and OH&P). "
               f"Standard wages: {STD_WAGES}.", F_BASE),
@@ -458,7 +432,7 @@ def build(a):
         put(ws, f"A{i}", t, font=f)
         ws[f"A{i}"].alignment = Alignment(wrap_text=True)
 
-    for s in (bls, bms, pr, jcs):
+    for s in (bls, jcs):
         for row in s.iter_rows(min_row=2):
             for c in row:
                 c.font = F_BASE
@@ -552,7 +526,7 @@ def main():
     ap.add_argument("--prices", default=""); ap.add_argument("--job-cost", default="")
     ap.add_argument("--out", default="Dashboard.xlsx")
     ap.add_argument("--period", default="YTD", choices=PERIODS)
-    ap.add_argument("--top", type=int, default=12); ap.add_argument("--movers", type=int, default=10)
+    ap.add_argument("--top", type=int, default=12); ap.add_argument("--movers", type=int, default=25)
     ap.add_argument("--stamp", default=dt.datetime.now().strftime("%Y-%m-%d %H:%M"))
     ap.add_argument("--no-recalc", action="store_true")
     a = ap.parse_args()

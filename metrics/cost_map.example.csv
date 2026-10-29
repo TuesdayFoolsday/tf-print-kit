@@ -1,0 +1,27 @@
+class,pattern,bucket,note
+CMU,trenwyth|burnish|\bSF\b|split|ground|glaz|scored|ivany|color,cmu_arch,architectural CMU by description
+CMU,.,cmu_gray,all other CMU
+BRI,.,brick,
+LIS,.,stone,natural/limestone
+LIL,.,cast_stone,cast stone caps/columns
+CST,.,cast_stone,
+GLB,.,other_items,glass block (own bucket later if it recurs)
+GRC,.,support:cmu,grout -> CMU
+REB,.,support:cmu,rebar -> CMU
+RES,.,support:cmu,rebar positioners -> CMU
+WIR,.,support:cmu,joint reinforcement -> CMU
+MOR,gray,support:cmu,gray mortar -> CMU
+MOR,.,support:colored_mortar,colored mortar -> veneer (or arch CMU when no veneer)
+ANC,.,support:veneer,anchors/ties -> veneer
+FLA,.,support:veneer,flashing system -> veneer
+DRI,.,support:veneer,drip edge -> veneer
+MN,.,support:veneer,mortar net -> veneer
+SCR,.,support:veneer,anchor screws -> veneer
+MES,.,support:veneer,cavity drainage mat -> veneer
+FEE,.,support:all,delivery -> all units by wall SF
+INR,.,insulation,cavity insulation
+SCA,.,scaffold,scaffold
+DF,.,other_items,door frames set
+CON,.,other_items,control joint material
+CLK,.,other_items,caulking
+AIR,.,other_items,air barrier / adjustments

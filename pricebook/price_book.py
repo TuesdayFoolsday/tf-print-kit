@@ -286,7 +286,9 @@ def cmd_check(a):
 
 
 def cmd_latest(a):
-    rows = [r for r in all_rows(a.csv) if r["latest"] == "y"]
+    rows = all_rows(a.csv)
+    mark_latest(rows)  # recompute across every file read (a run may have refreshed only one month)
+    rows = [r for r in rows if r["latest"] == "y"]
     if a.item:
         rx = re.compile(a.item, re.I)
         rows = [r for r in rows if rx.search(" ".join([r["item"], r["product"], r["size_color"], r["manufacturer"]]))]

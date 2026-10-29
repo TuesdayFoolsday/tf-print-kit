@@ -14,15 +14,19 @@ quotes.json = a list of quotes (or one quote object):
    "lines": [{"item": "brick modular", "product": "as written", "manufacturer": "...", "size_color": "...",
               "qty": 90000, "unit": "M", "unit_price": 800, "price_per_sf": 5.52, "notes": "..."}]}
 
+Writes two files: <price_book.csv> (one row per line item) and its companion 'Price Book Quotes <year>.csv'
+(one row per quote: link, freight, quote ref) joined on quote_key.
 Rows are keyed by source_id + line number, so re-running the same quote replaces its rows (never duplicates).
 `latest` = y on the newest row per supplier + item + unit + size_color.
 """
 import argparse, csv, datetime as dt, hashlib, json, re, sys
 from collections import defaultdict
 
-COLS = ["quote_id", "quote_date", "supplier", "class", "project", "city", "item", "product", "manufacturer",
-        "size_color", "qty", "unit", "unit_price", "price_per_sf", "unit_type", "freight", "tax", "hold_until",
-        "quote_ref", "latest", "source_url", "notes"]
+COLS = ["quote_id", "quote_key", "quote_date", "supplier", "class", "project", "city", "item", "product",
+        "manufacturer", "size_color", "qty", "unit", "unit_price", "price_per_sf", "unit_type", "tax", "hold_until",
+        "latest", "notes"]
+QCOLS = ["quote_key", "quote_date", "supplier", "class", "project", "city", "quote_ref", "freight", "tax",
+         "hold_until", "lines", "source_url"]
 CLASSES = {"brick", "cmu", "stone", "cast_stone", "mortar_grout", "accessories", "insulation", "rebar",
            "sub_stucco", "sub_waterproofing", "sub_caulking", "other"}
 UNITS = {"M": ["m", "/m", "per m", "thousand", "per thousand", "1000", "mbf"],
@@ -74,13 +78,24 @@ def iso(d):
         return None
 
 
+def qkey(source_id):
+    return hashlib.sha1(str(source_id).encode()).hexdigest()[:10]
+
+
 def qid(source_id, n):
-    return hashlib.sha1(str(source_id).encode()).hexdigest()[:10] + f"-{n:02d}"
+    return qkey(source_id) + f"-{n:02d}"
+
+
+def quotes_path(csv_path):
+    """Companion file: 'Price Book 2026.csv' -> 'Price Book Quotes 2026.csv'."""
+    d, _, b = csv_path.rpartition("/")
+    nb = b.replace("Price Book", "Price Book Quotes", 1) if "Price Book" in b else b[:-4] + " Quotes.csv"
+    return (d + "/" if d else "") + nb
 
 
 def flatten(quotes):
-    """Validate quotes, return (rows, problems). A quote with any hard problem contributes no rows."""
-    rows, problems = [], []
+    """Validate quotes, return (rows, qrows, problems). A quote with any hard problem contributes no rows."""
+    rows, qrows, problems = [], [], []
     for qi, q in enumerate(quotes):
         tag = f"quote {qi + 1} ({q.get('supplier', '?')} / {q.get('project', '?')})"
         hard = []
@@ -115,21 +130,23 @@ def flatten(quotes):
                 hard.append(f"line {n}: no unit_price or price_per_sf")
             notes = (ln.get("notes") or "").strip()
             out.append({
-                "quote_id": qid(q.get("source_id"), n), "quote_date": qd, "supplier": q.get("supplier", "").strip(),
+                "quote_id": qid(q.get("source_id"), n), "quote_key": qkey(q.get("source_id")), "quote_date": qd, "supplier": q.get("supplier", "").strip(),
                 "class": cls, "project": (q.get("project") or "").strip(), "city": (q.get("city") or "").strip(),
                 "item": (ln.get("item") or "").strip().lower(), "product": (ln.get("product") or "").strip(),
                 "manufacturer": (ln.get("manufacturer") or "").strip(), "size_color": (ln.get("size_color") or "").strip(),
                 "qty": "" if qty in ("", None) else (int(qty) if float(qty).is_integer() else qty),
                 "unit": u or "", "unit_price": p if p is not None else "", "price_per_sf": psf if psf is not None else "",
                 "unit_type": unit_type(cls, f"{ln.get('item', '')} {ln.get('product', '')} {ln.get('size_color', '')}"),
-                "freight": (q.get("freight") or "").strip(), "tax": tax, "hold_until": hold,
-                "quote_ref": str(q.get("quote_ref") or "").strip(), "latest": "",
-                "source_url": (q.get("source_url") or "").strip(), "notes": notes})
+                "tax": tax, "hold_until": hold, "latest": "", "notes": notes})
         if hard:
             problems.append(f"{tag}: " + "; ".join(hard))
         else:
             rows.extend(out)
-    return rows, problems
+            qrows.append({"quote_key": qkey(q["source_id"]), "quote_date": qd, "supplier": q["supplier"].strip(),
+                          "class": cls, "project": (q.get("project") or "").strip(), "city": (q.get("city") or "").strip(),
+                          "quote_ref": str(q.get("quote_ref") or "").strip(), "freight": (q.get("freight") or "").strip(),
+                          "tax": tax, "hold_until": hold, "lines": len(out), "source_url": (q.get("source_url") or "").strip()})
+    return rows, qrows, problems
 
 
 def load_csv(path):
@@ -151,10 +168,10 @@ def mark_latest(rows):
         r["latest"] = "y" if id(r) in ids else ""
 
 
-def write_csv(rows, path):
-    rows.sort(key=lambda r: (r["quote_date"], r["supplier"], r["quote_id"]), reverse=True)
+def write_csv(rows, path, cols=COLS, key="quote_id"):
+    rows.sort(key=lambda r: (r["quote_date"], r["supplier"], r[key]), reverse=True)
     with open(path, "w", newline="", encoding="utf-8") as f:
-        w = csv.DictWriter(f, fieldnames=COLS, extrasaction="ignore")
+        w = csv.DictWriter(f, fieldnames=cols, extrasaction="ignore")
         w.writeheader()
         w.writerows(rows)
 
@@ -165,24 +182,27 @@ def read_quotes(path):
 
 
 def cmd_append(a):
-    new, problems = flatten(read_quotes(a.quotes))
+    new, qnew, problems = flatten(read_quotes(a.quotes))
     for p in problems:
         print("⚠ not written — " + p)
-    old = load_csv(a.csv)
-    newids = {r["quote_id"].rsplit("-", 1)[0] for r in new}
-    kept = [r for r in old if r["quote_id"].rsplit("-", 1)[0] not in newids]
-    rows = kept + new
+    newkeys = {q["quote_key"] for q in qnew}
+    rows = [r for r in load_csv(a.csv) if r["quote_key"] not in newkeys] + new
+    qpath = quotes_path(a.csv)
+    qrows = [q for q in load_csv(qpath) if q["quote_key"] not in newkeys] + qnew
     mark_latest(rows)
     write_csv(rows, a.csv)
-    size = sum(len(",".join(str(r.get(c, "")) for c in COLS)) + 1 for r in rows)
-    print(f"Price Book: +{len(new)} lines from {len(newids)} quotes; {len(rows)} rows total (~{size // 1024} KB)")
-    if size > 900_000:
-        print("⚠ Price Book is over 900 KB — start a new yearly file")
+    write_csv(qrows, qpath, QCOLS, "quote_key")
+    import os
+    sizes = os.path.getsize(a.csv), os.path.getsize(qpath)
+    print(f"Price Book: +{len(new)} lines from {len(newkeys)} quotes; {len(rows)} lines / {len(qrows)} quotes "
+          f"({sizes[0] // 1024} KB / {sizes[1] // 1024} KB)")
+    if max(sizes) > 900_000:
+        print("⚠ a Price Book file is over 900 KB — start a new yearly file")
     return 1 if problems else 0
 
 
 def cmd_check(a):
-    rows, problems = flatten(read_quotes(a.quotes))
+    rows, _, problems = flatten(read_quotes(a.quotes))
     for p in problems:
         print("⚠ " + p)
     print(f"{len(rows)} valid lines; {len(problems)} quotes with problems")
@@ -209,11 +229,12 @@ def cmd_movers(a):
     rows = load_csv(a.csv)
     groups = defaultdict(list)
     for r in rows:
-        if r["unit_price"] and r["unit"] != "LS":
-            groups[(r["supplier"], r["item"], r["unit"], r["size_color"].lower())].append(r)
+        if r["unit_price"] and r["unit"] != "LS" and r["item"] not in ("other", "delivery", "fuel surcharge") and "allowance" not in r["notes"].lower():
+            prod = re.sub(r"[^a-z0-9]+", " ", r["product"].lower()).strip()
+            groups[(r["supplier"], r["item"], prod, r["unit"], r["size_color"].lower())].append(r)
     today = dt.date.today()
     out = []
-    for (sup, item, unit, size), rs in groups.items():
+    for (sup, item, prod, unit, size), rs in groups.items():
         rs.sort(key=lambda r: r["quote_date"])
         last = rs[-1]
         if (today - dt.date.fromisoformat(last["quote_date"])).days > a.days:
@@ -226,7 +247,7 @@ def cmd_movers(a):
             continue
         pct = (p1 - p0) / p0 * 100
         if abs(pct) >= a.min_pct:
-            out.append((pct, f"{item} ({size or 'any'}) · {sup}: ${p0:,.2f} → ${p1:,.2f}/{unit} "
+            out.append((pct, f"{rs[-1]['product'][:40]} · {sup}: ${p0:,.2f} → ${p1:,.2f}/{unit} "
                               f"({pct:+.1f}%, {prior[-1]['quote_date']} → {last['quote_date']})"))
     out.sort(key=lambda x: -abs(x[0]))
     print("Price movers (last %d days, ≥ %.0f%%):" % (a.days, a.min_pct) if out else "Price movers: none")

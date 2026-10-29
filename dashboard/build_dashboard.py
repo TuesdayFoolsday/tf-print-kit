@@ -119,13 +119,32 @@ def prepare(a):
     raw2grp, merges = gc_groups(bl)
     T = {}
 
-    # tblBidLog
-    cols = ["bid_id", "project", "job_type", "gc_group", "bid_date", "status", "submitted_amount"]
+    # tblBidLog — one row per bid per GC, plus project-level columns so a project bid to many GCs counts once:
+    # project_first = 1 on the project's earliest row; project_status = awarded if any GC awarded it to us,
+    # open while any GC is still out, lost if decided against us, closed if no result; project_amount = its price.
+    norm = lambda x: re.sub(r"[^a-z0-9]+", " ", (x or "").lower()).strip()
+    groups = defaultdict(list)
+    for i, r in enumerate(bl):
+        groups[(norm(r["project"]), norm(r["city"]))].append(i)
+    pfirst, pstatus, pamount = {}, {}, {}
+    for idx in groups.values():
+        st = {bl[i]["status"] for i in idx}
+        first = min(idx, key=lambda i: (bl[i]["bid_date"] or "9999", i))
+        status = ("awarded" if "awarded" in st else "open" if "submitted" in st or ("bidding" in st and len(st) > 1)
+                  else "lost" if "lost" in st else "closed" if "closed" in st else sorted(st)[0])
+        amts = [num(bl[i]["submitted_amount"]) for i in idx if num(bl[i]["submitted_amount"])]
+        for i in idx:
+            pfirst[i], pstatus[i] = int(i == first), status
+        pamount[first] = max(amts) if amts else None
+    P_MULTI = sum(1 for idx in groups.values() if len(idx) > 1)
+    cols = ["bid_id", "project", "job_type", "gc_group", "bid_date", "status", "submitted_amount",
+            "project_first", "project_status", "project_amount"]
     rows = []
-    for r in bl:
+    for i, r in enumerate(bl):
         gc = (r["gc"] or "").strip()
         rows.append([r["bid_id"], r["project"], r["job_type"] or "unknown", raw2grp.get(gc, "(unknown)"),
-                     serial(day(r["bid_date"])), r["status"], num(r["submitted_amount"])])
+                     serial(day(r["bid_date"])), r["status"], num(r["submitted_amount"]),
+                     pfirst[i], pstatus[i], pamount.get(i)])
     T["tblBidLog"] = (cols, rows)
 
     # tblGCs / tblJobTypes: key column only (stats are table formulas); ordered by all-time bid count
@@ -183,14 +202,16 @@ def prepare(a):
                                 p["product"], p["supplier"], serial(day(p["quote_date"])), serial(day(p["prior_date"])),
                                 p["project"]] for p in movers])
 
-    about = [f"Rebuilt {a.stamp} from Bid Log 2026.csv ({len(bl)} rows), Bid Metrics 2026.csv ({len(bm)} estimates), "
+    about = [f"Rebuilt {a.stamp} from Bid Log 2026.csv ({len(bl)} rows = {len(groups)} projects, {P_MULTI} bid to more than one GC), Bid Metrics 2026.csv ({len(bm)} estimates), "
              f"Job Cost History.csv ({len(jc)} rows), Price Movers.csv ({len(movers)} movers).",
-             "Hit rate = won ÷ (won + lost) by bid date. Submitted-awaiting and closed bids are shown, never counted in the rate.",
+             "Hit rate (Dashboard, By Job Type) counts each PROJECT once: won if any GC awarded it to us, lost if decided against us, "
+             "open while any GC is still out; won ÷ (won + lost), by the project's first bid date. By GC counts each bid to that GC.",
              f"Labor $/SF = Crew Page base wage spread across unit types by line-item labor (before burden and OH&P). Standard wages: {STD_WAGES}.",
              "", "GC names merged (display ← spellings in the Bid Log):"]
     about += [f"{d} ← " + " | ".join(raws) for d, raws in merges] or ["none"]
     about += ["", "⚠ items:"] + (warn or ["none"])
-    return dict(T=T, bl=bl, bm=bm, warn=warn, about=about, stamp=f"Rebuilt {a.stamp}. Don't edit data tabs — they reload nightly.")
+    P_proj = {k: pstatus[idx[0]] for k, idx in groups.items()}
+    return dict(T=T, bl=bl, bm=bm, warn=warn, about=about, proj=P_proj, stamp=f"Rebuilt {a.stamp}. Don't edit data tabs — they reload nightly.")
 
 
 # ---------- workbook ----------
@@ -244,11 +265,17 @@ def add_table(ws, name, cols, rows, formulas=None, fmts=None, widths=None, start
     ws.freeze_panes = ws.cell(start + 1, 2)
 
 
-def stat_formulas(tbl, key, bidcol):
-    """Bids/Won/Lost/... formulas for a key table (GC or job type) against tblBidLog."""
+def stat_formulas(tbl, key, bidcol, project=False):
+    """Bids/Won/Lost/... formulas for a key table against tblBidLog. project=True counts each project once."""
     k = this(tbl, key)
-    cnt = lambda s: f'COUNTIFS(tblBidLog[status],"{s}",tblBidLog[in_period],1,tblBidLog[{bidcol}],{k})'
-    sm = lambda s: f'SUMIFS(tblBidLog[submitted_amount],tblBidLog[status],"{s}",tblBidLog[in_period],1,tblBidLog[{bidcol}],{k})'
+    if project:
+        cnt = lambda s: (f'COUNTIFS(tblBidLog[project_first],1,tblBidLog[project_status],"{PSTAT[s]}",'
+                         f'tblBidLog[in_period],1,tblBidLog[{bidcol}],{k})')
+        sm = lambda s: (f'SUMIFS(tblBidLog[project_amount],tblBidLog[project_first],1,tblBidLog[project_status],"{PSTAT[s]}",'
+                        f'tblBidLog[in_period],1,tblBidLog[{bidcol}],{k})')
+    else:
+        cnt = lambda s: f'COUNTIFS(tblBidLog[status],"{s}",tblBidLog[in_period],1,tblBidLog[{bidcol}],{k})'
+        sm = lambda s: f'SUMIFS(tblBidLog[submitted_amount],tblBidLog[status],"{s}",tblBidLog[in_period],1,tblBidLog[{bidcol}],{k})'
     w, l, ws_, ls = this(tbl, "Won"), this(tbl, "Lost"), this(tbl, "Won $"), this(tbl, "Lost $")
     return [("Bids", (f"={cnt('submitted')}+{cnt('awarded')}+{cnt('lost')}+{cnt('closed')}", INT)),
             ("Won", (f"={cnt('awarded')}", INT)), ("Lost", (f"={cnt('lost')}", INT)),
@@ -260,6 +287,7 @@ def stat_formulas(tbl, key, bidcol):
                           f'_xlfn.MAXIFS(tblBidLog[bid_date],tblBidLog[{bidcol}],{k}))', DATE))]
 
 
+PSTAT = {"submitted": "open", "awarded": "awarded", "lost": "lost", "closed": "closed"}
 STAT_HEAD = ["Bids", "Won", "Lost", "Hit rate", "Won $", "Lost $", "Hit rate $", "Awaiting", "Closed"]
 STAT_FMT = [INT, INT, INT, PCT, MONEY, MONEY, PCT, INT, INT]
 
@@ -279,10 +307,11 @@ def build(a, P):
     bd = this("tblBidLog", "bid_date")
     add_table(sh["Bid Log"], "tblBidLog", *T["tblBidLog"],
               formulas=[("in_period", (f'=IF({bd}="",IF(Period="All",1,0),IF({bd}>=PeriodFrom,1,0))', None))],
-              fmts={"bid_date": DATE, "submitted_amount": MONEY}, widths=[26, 40, 12, 26, 11, 11, 13, 9])
+              fmts={"bid_date": DATE, "submitted_amount": MONEY, "project_amount": MONEY},
+              widths=[26, 40, 12, 26, 11, 11, 13, 9, 11, 13, 9])
     add_table(sh["By GC"], "tblGCs", *T["tblGCs"], formulas=stat_formulas("tblGCs", "GC", "gc_group"),
               widths=[34, 8, 8, 8, 10, 13, 13, 10, 9, 8, 12])
-    add_table(sh["By Job Type"], "tblJobTypes", *T["tblJobTypes"], formulas=stat_formulas("tblJobTypes", "Job type", "job_type"),
+    add_table(sh["By Job Type"], "tblJobTypes", *T["tblJobTypes"], formulas=stat_formulas("tblJobTypes", "Job type", "job_type", project=True),
               widths=[18, 8, 8, 8, 10, 13, 13, 10, 9, 8, 12])
     lf = {"bid_date": DATE, "bid_price": MONEY, "wages_vs_std": PCT}
     lf.update({f"{u}_{p}": f for u, _ in UNIT_TYPES for p, f in PER})
@@ -351,12 +380,12 @@ def build(a, P):
             ws[f"{col}{r}"].border = THIN
 
     h0 = rl + 3
-    put(ws, f"A{h0}", '="Hit rate — "&C4&" (won ÷ won + lost)"', font=F_SECTION)
-    head(ws, h0 + 1, 1, [""] + STAT_HEAD)
+    put(ws, f"A{h0}", '="Hit rate by project — "&C4&" (projects won ÷ won + lost; a project bid to several GCs counts once)"', font=F_SECTION)
+    head(ws, h0 + 1, 1, [""] + ["Projects"] + STAT_HEAD[1:])
     r = h0 + 2
-    cnt = lambda s: f'COUNTIFS(tblBidLog[status],"{s}",tblBidLog[in_period],1)'
-    sm = lambda s: f'SUMIFS(tblBidLog[submitted_amount],tblBidLog[status],"{s}",tblBidLog[in_period],1)'
-    put(ws, f"A{r}", "All bids", font=F_BOLD)
+    cnt = lambda s: f'COUNTIFS(tblBidLog[project_first],1,tblBidLog[project_status],"{PSTAT[s]}",tblBidLog[in_period],1)'
+    sm = lambda s: f'SUMIFS(tblBidLog[project_amount],tblBidLog[project_first],1,tblBidLog[project_status],"{PSTAT[s]}",tblBidLog[in_period],1)'
+    put(ws, f"A{r}", "All projects", font=F_BOLD)
     for col, (v, f) in zip("BCDEFGHIJ", [(f"={cnt('submitted')}+{cnt('awarded')}+{cnt('lost')}+{cnt('closed')}", INT),
                                          (f"={cnt('awarded')}", INT), (f"={cnt('lost')}", INT),
                                          (f'=IF(C{r}+D{r}=0,"",C{r}/(C{r}+D{r}))', PCT), (f"={sm('awarded')}", MONEY),
@@ -367,12 +396,13 @@ def build(a, P):
     for n in range(1, N_JOBTYPES + 1):
         idx_row(r + 1 + n, "tblJobTypes", "Job type", n)
     hr = r + 2 + N_JOBTYPES
-    put(ws, f"A{hr}", '="Bids = submitted + won + lost + closed. Awaiting and closed are not in the rate. $ rates use submitted amounts ("'
-        '&COUNTIFS(tblBidLog[status],"awarded",tblBidLog[submitted_amount],"")+COUNTIFS(tblBidLog[status],"lost",tblBidLog[submitted_amount],"")'
-        '&" won/lost bids have no amount). Every GC: By GC tab."', font=F_NOTE)
+    put(ws, f"A{hr}", '="Projects = open + won + lost + closed. Open (a GC still out) and closed (no result) are not in the rate. "'
+        '&"$ uses each project\'s price once ("&COUNTIFS(tblBidLog[project_first],1,tblBidLog[project_status],"awarded",tblBidLog[project_amount],"")'
+        '+COUNTIFS(tblBidLog[project_first],1,tblBidLog[project_status],"lost",tblBidLog[project_amount],"")'
+        '&" won/lost projects have no amount). By GC counts every bid to that GC."', font=F_NOTE)
 
     g0 = hr + 2
-    put(ws, f"A{g0}", '="Top GCs by bids (all-time order) — "&C4', font=F_SECTION)
+    put(ws, f"A{g0}", '="Top GCs by bids (all-time order) — "&C4&" — each bid to the GC counts"', font=F_SECTION)
     head(ws, g0 + 1, 1, ["GC"] + STAT_HEAD)
     for n in range(1, N_TOPGC + 1):
         idx_row(g0 + 1 + n, "tblGCs", "GC", n)
@@ -470,8 +500,8 @@ def check(path, P):
                     if isinstance(cv, str) and any(cv.startswith(e) for e in ERRORS):
                         problems.append(f"{ws.title}!{c.coordinate} = {cv}")
     d = wb["Dashboard"]
-    row = next(r for r in range(1, 80) if d[f"A{r}"].value == "All bids")
-    won = sum(r["status"] == "awarded" for r in P["bl"]); lost = sum(r["status"] == "lost" for r in P["bl"])
+    row = next(r for r in range(1, 80) if d[f"A{r}"].value == "All projects")
+    won = sum(v == "awarded" for v in P["proj"].values()); lost = sum(v == "lost" for v in P["proj"].values())
     if (d[f"C{row}"].value, d[f"D{row}"].value) != (won, lost):
         problems.append(f"hit rate cross-check: sheet {(d[f'C{row}'].value, d[f'D{row}'].value)} vs python {(won, lost)}")
     for u, name in UNIT_TYPES:

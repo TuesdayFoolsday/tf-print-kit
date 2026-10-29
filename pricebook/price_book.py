@@ -174,7 +174,7 @@ def mark_latest(rows):
 def write_csv(rows, path, cols=COLS, key="quote_id"):
     rows.sort(key=lambda r: (r["quote_date"], r["supplier"], r[key]), reverse=True)
     with open(path, "w", newline="", encoding="utf-8") as f:
-        w = csv.DictWriter(f, fieldnames=cols, extrasaction="ignore")
+        w = csv.DictWriter(f, fieldnames=cols, extrasaction="ignore", lineterminator="\n")
         w.writeheader()
         w.writerows(rows)
 

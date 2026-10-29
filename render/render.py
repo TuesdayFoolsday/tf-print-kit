@@ -120,6 +120,7 @@ def prepare(raw: dict) -> dict:
     bid["supersedes"] = bid["rev"] - 1 if bid["rev"] > 0 else None
     bid["sales_tax_included"] = bool(bid.get("sales_tax_included", True))
     bid["attach_cert"] = bool(bid.get("attach_cert", False))
+    bid["price_bond"] = bool(bid.get("price_bond", False))  # P&P bond shown only when the GC explicitly asks
     bid["bond_amount"] = bond_add(bid["base_bid"])
     addenda = bid.get("addenda") or []
     bid["addenda_text"] = ", ".join(str(a) for a in addenda) if addenda else "None received"

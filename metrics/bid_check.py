@@ -1,54 +1,77 @@
-"""Compare one export's unit rates to history and print a short plain-text check.
+"""Compare one export's labor $/SF by unit type to history and print a short plain-text check.
 
-    python3 metrics/bid_check.py <export.XML> <cost_map.csv> <history.csv> [--project NAME] [--append]
+    python3 metrics/bid_check.py <export.XML | compact.json> <cost_map.csv> <history.csv> [--project NAME] [--note TEXT] [--append]
 
-Flags any unit type whose labor $/SF, material $/SF, sell $/SF or SF/man-day sits outside the
-historical range by more than 20%. --append adds this bid's row to history.csv (replacing a row
-with the same project name).
+Labor $/SF (base wage actually priced, before burden and markup) is the judged metric: it is the only one
+flagged. Production, material and sell $/SF are printed for reference. --append adds or replaces this
+project's row in history.csv (only when the export reconciles); --note sets the row's notes (e.g. "radius wall").
 """
 import argparse, csv, statistics, sys, os
 sys.path.insert(0, os.path.dirname(__file__))
 import bid_metrics as m
 
-METRICS = [("labor_per_sf", "labor $/SF"), ("material_per_sf", "material $/SF"),
-           ("sell_per_sf", "sell $/SF"), ("sf_per_manday", "SF/man-day")]
-TOL = 0.20
+TOL = 0.20           # flag labor $/SF more than 20% outside the historical range
+CREW_GAP = 0.05      # flag when Crew Page labor differs from item labor by more than 5%
+
+
+def fnum(x):
+    try:
+        return float(x)
+    except (TypeError, ValueError):
+        return None
 
 
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("export"); ap.add_argument("cost_map"); ap.add_argument("history")
-    ap.add_argument("--project", default=""); ap.add_argument("--append", action="store_true")
+    ap.add_argument("--project", default=""); ap.add_argument("--note", default="")
+    ap.add_argument("--append", action="store_true")
     a = ap.parse_args()
     r = m.compute(a.export, a.cost_map, a.project)
     hist = []
     if os.path.exists(a.history):
         with open(a.history, newline="", encoding="utf-8") as f:
-            hist = [h for h in csv.DictReader(f) if h.get("project") != r["project"]]
+            hist = list(csv.DictReader(f))
+    prev = next((h for h in hist if h.get("project") == r["project"]), None)
+    r["notes"] = a.note or (prev or {}).get("notes", "")
+    hist = [h for h in hist if h.get("project") != r["project"]]
+
     out = [f"Bid Check — {r['project']} — ${r['bid_price']:,} — {r['wall_sf_total']:,.0f} wall SF — "
-           f"${r['sell_per_wall_sf'] or 0:,.2f}/SF overall — OH {r['oh_pct']:.0%} / profit {r['profit_pct']:.0%}"]
+           f"OH {r['oh_pct']:.0%} / profit {r['profit_pct']:.0%}"]
     if r["reconciles"] != "y":
         out.append(f"⚠ export does not reconcile — {r['reconcile_notes']}. Not added to history.")
+    gap = r["crew_vs_takeoff_labor"] - 1
+    if abs(gap) > CREW_GAP:
+        out.append(f"⚠ Crew Page labor is {abs(gap):.0%} {'below' if gap < 0 else 'above'} the item labor "
+                   f"(${r['crew_vs_takeoff_labor'] * 100:.1f} per $100). Rates below use the Crew Page (what's in the price).")
     if r["unmapped_items"]:
         out.append(f"⚠ items not in Cost Map (counted as other): {r['unmapped_items']}")
+
     flags = 0
     for u in m.UNIT_TYPES:
         if not r.get(f"{u}_sf"):
             continue
-        parts = []
-        for key, label in METRICS:
-            v = r.get(f"{u}_{key}")
-            past = [float(h[f"{u}_{key}"]) for h in hist if h.get(f"{u}_{key}") not in (None, "", "None")]
-            if v is None or not past:
-                parts.append(f"{label} {v}"); continue
-            lo, hi, med = min(past), max(past), statistics.median(past)
+        name = u.replace("_", " ")
+        v = r.get(f"{u}_labor_per_sf")
+        past = [(fnum(h.get(f"{u}_labor_per_sf")), h) for h in hist]
+        past = [(x, h) for x, h in past if x is not None]
+        line = f"• {name} {r[f'{u}_sf']:,.0f} SF — labor ${v:,.2f}/SF"
+        if past:
+            lo, hi = min(past, key=lambda t: t[0]), max(past, key=lambda t: t[0])
+            med = statistics.median(x for x, _ in past)
+            tag = lambda t: t[1]["project"] + (f" ({t[1]['notes']})" if t[1].get("notes") else "")
             mark = ""
-            if v < lo * (1 - TOL) or v > hi * (1 + TOL):
-                mark = " ⚠"; flags += 1
-            parts.append(f"{label} {v:,.2f} (hist {lo:,.2f}–{hi:,.2f}, med {med:,.2f}, n={len(past)}){mark}")
-        out.append(f"• {u.replace('_', ' ')} {r[f'{u}_sf']:,.0f} SF: " + "; ".join(parts))
-    out.append(f"{flags} flag(s) outside history ±{TOL:.0%}." if flags else "All unit rates inside historical range.")
+            if v < lo[0] * (1 - TOL) or v > hi[0] * (1 + TOL):
+                mark = " ⚠ " + ("HIGH" if v > hi[0] else "LOW"); flags += 1
+            line += (f"{mark} | median ${med:,.2f} · low ${lo[0]:,.2f} {tag(lo)} · high ${hi[0]:,.2f} {tag(hi)} · n={len(past)}")
+        else:
+            line += " | no history yet"
+        ref = [f"{r.get(f'{u}_sf_per_manday') or '–'} SF/man-day",
+               f"material ${r.get(f'{u}_material_per_sf', 0):,.2f}/SF", f"sell ${r.get(f'{u}_sell_per_sf', 0):,.2f}/SF"]
+        out.append(line + "\n   ref: " + " · ".join(ref))
+    out.append(f"{flags} labor flag(s) outside history ±{TOL:.0%}." if flags else "Labor $/SF inside historical range on every unit type.")
     print("\n".join(out))
+
     if a.append and r["reconciles"] == "y":
         rows = hist + [r]
         keys = []

@@ -83,6 +83,9 @@ def grand_totals(wb):
         elif label.startswith("Material + Misc"):
             vals = [num(c) for c in cells if num(c)]
             g["mat_cost_tax"], g["mat_oh"], g["mat_profit"], g["mat_ohp"], g["mat_total"] = vals[:5]
+        elif label == "Base":
+            vals = [num(c) for c in cells if num(c)]
+            g["crew_base"] = vals[-1] if vals else 0
         elif label == "Crew Labor Cost":
             vals = [num(c) for c in cells if num(c)]
             g["crew_cost"], g["crew_oh"], g["crew_profit"], g["crew_ohp"], g["crew_total"] = vals[:5]
@@ -117,7 +120,7 @@ def grand_totals(wb):
 
 COMPACT_ROW = ["cls", "id", "desc", "amount", "units", "qty", "qty_units", "labor", "material", "mandays"]
 COMPACT_TOTALS = ["material", "misc_taxable", "tax_rate", "mat_total", "crew_total", "equip_total", "misc_total",
-                  "sub_total", "clean_total", "oh_pct", "profit_pct", "bid_price", "labor_base_total"]
+                  "sub_total", "clean_total", "oh_pct", "profit_pct", "bid_price", "labor_base_total", "crew_base"]
 
 
 def to_compact(path):
@@ -182,6 +185,9 @@ def compute(path, map_path, project="", bid_id=""):
     lab_sum = sum(r["labor"] for r in rows)
     mat_sum = sum(r["material"] for r in rows)
     labor_factor = g.get("crew_total", 0) / lab_sum if lab_sum else 0          # base labor -> burdened + OH&P
+    # The price carries Crew Page labor, not the sum of item labor. Priced labor = item labor scaled to the
+    # Crew Page base wage, so labor $/SF reflects what is actually in the bid.
+    crew_ratio = g["crew_base"] / lab_sum if lab_sum and g.get("crew_base") else 1.0
     mat_factor = (g.get("mat_total", 0) * (g.get("material", mat_sum) / (g.get("material", mat_sum) + g.get("misc_taxable", 0)))) / mat_sum if mat_sum else 0
     misc_taxable_sell = g.get("mat_total", 0) - mat_sum * mat_factor
 
@@ -198,20 +204,23 @@ def compute(path, map_path, project="", bid_id=""):
         row[f"{b}_sf"] = round(x["sf"], 1)
         if b in UNIT_TYPES:
             row[f"{b}_pieces"] = round(x["pieces"])
-        row[f"{b}_labor_base"] = round(x["labor"])
+        row[f"{b}_labor_base"] = round(x["labor"] * crew_ratio)
+        row[f"{b}_labor_takeoff"] = round(x["labor"])
         row[f"{b}_material_base"] = round(x["material"])
         row[f"{b}_mandays"] = round(x["mandays"], 1)
         row[f"{b}_sell"] = round(lab_sell + mat_sell)
         if b in UNIT_TYPES and x["sf"] > 0:
-            row[f"{b}_labor_per_sf"] = round(x["labor"] / x["sf"], 2)
+            row[f"{b}_labor_per_sf"] = round(x["labor"] * crew_ratio / x["sf"], 2)
+            row[f"{b}_labor_takeoff_per_sf"] = round(x["labor"] / x["sf"], 2)
             row[f"{b}_material_per_sf"] = round(x["material"] / x["sf"], 2)
             row[f"{b}_sell_per_sf"] = round((lab_sell + mat_sell) / x["sf"], 2)
             row[f"{b}_sf_per_manday"] = round(x["sf"] / x["mandays"], 1) if x["mandays"] else None
             if x["pieces"]:
-                row[f"{b}_labor_per_piece"] = round(x["labor"] / x["pieces"], 2)
+                row[f"{b}_labor_per_piece"] = round(x["labor"] * crew_ratio / x["pieces"], 2)
                 row[f"{b}_pieces_per_manday"] = round(x["pieces"] / x["mandays"], 1) if x["mandays"] else None
     total = sold + row["equipment_sell"] + row["misc_sell"] + row["subs_sell"] + row["cleaning_sell"]
     row["bucketed_total"] = round(total)
+    row["crew_vs_takeoff_labor"] = round(crew_ratio, 3)
     # Three checks catch a bad transcription or a misread export: rows sum to the sheet totals, and the
     # Grand Totals parts sum to the bid price. Buckets themselves always sum by construction.
     parts = sum(g.get(k, 0) for k in ("mat_total", "crew_total", "equip_total", "misc_total", "sub_total", "clean_total"))

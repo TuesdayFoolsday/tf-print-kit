@@ -5,6 +5,7 @@
     python3 pricebook/price_book.py latest <price_book.csv> [--item TEXT] [--days N]
     python3 pricebook/price_book.py movers <price_book.csv> [--days 90] [--min-pct 3]
     python3 pricebook/price_book.py check  <quotes.json>                        # validate only, no write
+    python3 pricebook/price_book.py export <folder> <out.csv> [--days 90]       # latest rows + change vs prior quote
 
 quotes.json = a list of quotes (or one quote object):
   {"source_id": "<email message id or file item id>", "source_url": "<webLink/webUrl>",
@@ -333,6 +334,51 @@ def cmd_movers(a):
         print("· " + line)
 
 
+LATEST_COLS = ["item", "supplier", "product", "size_color", "unit", "unit_price", "price_per_sf", "quote_date",
+               "project", "hold_until", "prior_price", "prior_date", "change_pct", "mover", "notes"]
+
+
+def _prod(r):
+    return re.sub(r"[^a-z0-9]+", " ", r["product"].lower()).strip()
+
+
+def cmd_export(a):
+    """One small file for the Dashboard: every latest row, with the change vs the same supplier's same product
+    quoted at least 30 days earlier. mover = y when that change is >= --min-pct and the latest quote is within --days."""
+    rows = all_rows(a.csv)
+    mark_latest(rows)
+    hist = defaultdict(list)
+    for r in rows:
+        if r["unit_price"]:
+            hist[(r["supplier"], r["item"], _prod(r), r["unit"], r["size_color"].lower())].append(r)
+    today = dt.date.today()
+    out = []
+    for r in rows:
+        if r["latest"] != "y":
+            continue
+        o = {k: r.get(k, "") for k in LATEST_COLS}
+        o["notes"] = o["notes"][:80]
+        o.update(prior_price="", prior_date="", change_pct="", mover="")
+        if r["unit_price"] and r["unit"] != "LS" and r["item"] not in ("other", "delivery", "fuel surcharge") \
+                and "allowance" not in r["notes"].lower():
+            d1 = dt.date.fromisoformat(r["quote_date"])
+            prior = sorted((x for x in hist[(r["supplier"], r["item"], _prod(r), r["unit"], r["size_color"].lower())]
+                            if (d1 - dt.date.fromisoformat(x["quote_date"])).days >= 30), key=lambda x: x["quote_date"])
+            if prior and float(prior[-1]["unit_price"]) > 0:
+                p0, p1 = float(prior[-1]["unit_price"]), float(r["unit_price"])
+                pct = (p1 - p0) / p0
+                o.update(prior_price=prior[-1]["unit_price"], prior_date=prior[-1]["quote_date"],
+                         change_pct=f"{pct:.4f}",
+                         mover="y" if abs(pct) * 100 >= a.min_pct and (today - d1).days <= a.days else "")
+        out.append(o)
+    out.sort(key=lambda r: (r["item"], r["supplier"].lower(), r["product"].lower(), r["size_color"].lower()))
+    with open(a.out, "w", newline="", encoding="utf-8") as f:
+        w = csv.DictWriter(f, fieldnames=LATEST_COLS, lineterminator="\n")
+        w.writeheader(); w.writerows(out)
+    import os
+    print(f"{len(out)} latest rows ({sum(r['mover'] == 'y' for r in out)} movers) -> {a.out} ({os.path.getsize(a.out) // 1024} KB)")
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     sp = ap.add_subparsers(dest="cmd", required=True)
@@ -341,6 +387,8 @@ def main():
     p = sp.add_parser("latest"); p.add_argument("csv"); p.add_argument("--item"); p.add_argument("--days", type=int); p.set_defaults(f=cmd_latest)
     p = sp.add_parser("movers"); p.add_argument("csv"); p.add_argument("--days", type=int, default=90)
     p.add_argument("--min-pct", type=float, default=3); p.set_defaults(f=cmd_movers)
+    p = sp.add_parser("export"); p.add_argument("csv"); p.add_argument("out"); p.add_argument("--days", type=int, default=90)
+    p.add_argument("--min-pct", type=float, default=3); p.set_defaults(f=cmd_export)
     a = ap.parse_args()
     sys.exit(a.f(a) or 0)
 

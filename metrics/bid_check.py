@@ -28,7 +28,7 @@ def main():
     out = [f"Bid Check — {r['project']} — ${r['bid_price']:,} — {r['wall_sf_total']:,.0f} wall SF — "
            f"${r['sell_per_wall_sf'] or 0:,.2f}/SF overall — OH {r['oh_pct']:.0%} / profit {r['profit_pct']:.0%}"]
     if r["reconciles"] != "y":
-        out.append(f"⚠ export does not reconcile: buckets ${r['bucketed_total']:,} vs bid ${r['bid_price']:,}")
+        out.append(f"⚠ export does not reconcile — {r['reconcile_notes']}. Not added to history.")
     if r["unmapped_items"]:
         out.append(f"⚠ items not in Cost Map (counted as other): {r['unmapped_items']}")
     flags = 0
@@ -49,7 +49,7 @@ def main():
         out.append(f"• {u.replace('_', ' ')} {r[f'{u}_sf']:,.0f} SF: " + "; ".join(parts))
     out.append(f"{flags} flag(s) outside history ±{TOL:.0%}." if flags else "All unit rates inside historical range.")
     print("\n".join(out))
-    if a.append:
+    if a.append and r["reconciles"] == "y":
         rows = hist + [r]
         keys = []
         [keys.append(k) for x in rows for k in x if k not in keys]

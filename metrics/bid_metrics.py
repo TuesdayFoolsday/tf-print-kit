@@ -1,6 +1,7 @@
 """Turn an estimating export (Excel 2003 XML: sheets Material + Grand Totals) into one bid-metrics row.
 
-    python3 metrics/bid_metrics.py <export.XML> <cost_map.csv> [--project NAME] [--bid-id ID] [--json]
+    python3 metrics/bid_metrics.py <export.XML | compact.json> <cost_map.csv> [--project NAME] [--bid-id ID] [--json]
+    python3 metrics/bid_metrics.py <export.XML> - --compact      # export -> compact JSON
 
 Buckets labor/material by unit type using the cost map, spreads support items (grout, rebar, mortar,
 anchors, flashing...) onto the units they serve, loads labor and material to selling price using the
@@ -105,17 +106,47 @@ def grand_totals(wb):
             g["bid_price"] = vals[-1] if vals else 0
         elif "Performance Bond" in " ".join(cells):
             g["bond_note"] = next(c for c in cells if "Performance Bond" in c)
+    for r in wb["Material"]:
+        if len(r) > 16 and r[11].strip() == "Totals:":
+            g["labor_base_total"], g["material_sheet_total"] = num(r[12]), num(r[16])
     g["job_title"] = (wb["Grand Totals"][0] + [""] * 6)[4].strip()
     jn = [c for c in wb["Grand Totals"][0] if c.strip()]
     g["job_number"] = jn[-1] if jn else ""
     return g
 
 
-def compute(path, map_path, project="", bid_id=""):
+COMPACT_ROW = ["cls", "id", "desc", "amount", "units", "qty", "qty_units", "labor", "material", "mandays"]
+COMPACT_TOTALS = ["material", "misc_taxable", "tax_rate", "mat_total", "crew_total", "equip_total", "misc_total",
+                  "sub_total", "clean_total", "oh_pct", "profit_pct", "bid_price", "labor_base_total"]
+
+
+def to_compact(path):
+    """Export -> small JSON a run can transcribe or check: {job_title, job_number, rows:[[...]], totals:{...}}."""
     wb = sheets(path)
-    rules = load_map(map_path)
-    rows = material_rows(wb)
     g = grand_totals(wb)
+    return {"job_title": g["job_title"], "job_number": g["job_number"],
+            "rows": [[r[k] for k in COMPACT_ROW] for r in material_rows(wb)],
+            "totals": {k: g.get(k, 0) for k in COMPACT_TOTALS}}
+
+
+def load(path):
+    if path.lower().endswith(".json"):
+        c = json.load(open(path, encoding="utf-8"))
+        rows = [dict(zip(COMPACT_ROW, r)) for r in c["rows"]]
+        for r in rows:
+            for k in ("amount", "qty", "labor", "material", "mandays"):
+                r[k] = num(r[k])
+            r["qty_units"] = r.get("qty_units") or ""
+        g = {k: num(c["totals"].get(k, 0)) for k in COMPACT_TOTALS}
+        g["job_title"], g["job_number"] = c.get("job_title", ""), c.get("job_number", "")
+        return rows, g
+    wb = sheets(path)
+    return material_rows(wb), grand_totals(wb)
+
+
+def compute(path, map_path, project="", bid_id=""):
+    rules = load_map(map_path)
+    rows, g = load(path)
     B = {b: dict(sf=0.0, pieces=0.0, labor=0.0, material=0.0, mandays=0.0) for b in UNIT_TYPES + OTHER}
     support = {"cmu": [], "veneer": [], "colored_mortar": [], "all": []}
     for r in rows:
@@ -181,7 +212,18 @@ def compute(path, map_path, project="", bid_id=""):
                 row[f"{b}_pieces_per_manday"] = round(x["pieces"] / x["mandays"], 1) if x["mandays"] else None
     total = sold + row["equipment_sell"] + row["misc_sell"] + row["subs_sell"] + row["cleaning_sell"]
     row["bucketed_total"] = round(total)
-    row["reconciles"] = "y" if abs(total - g.get("bid_price", 0)) <= max(1.0, 0.0005 * g.get("bid_price", 0)) else "n"
+    # Three checks catch a bad transcription or a misread export: rows sum to the sheet totals, and the
+    # Grand Totals parts sum to the bid price. Buckets themselves always sum by construction.
+    parts = sum(g.get(k, 0) for k in ("mat_total", "crew_total", "equip_total", "misc_total", "sub_total", "clean_total"))
+    problems = []
+    if abs(lab_sum - g.get("labor_base_total", lab_sum)) > 1:
+        problems.append(f"labor rows {lab_sum:,.0f} vs sheet total {g['labor_base_total']:,.0f}")
+    if abs(mat_sum - g.get("material", mat_sum)) > 1:
+        problems.append(f"material rows {mat_sum:,.0f} vs Material Costs {g['material']:,.0f}")
+    if abs(parts - g.get("bid_price", 0)) > 2:
+        problems.append(f"Grand Totals parts {parts:,.0f} vs bid price {g.get('bid_price', 0):,.0f}")
+    row["reconciles"] = "n" if problems else "y"
+    row["reconcile_notes"] = "; ".join(problems)
     row["mandays_total"] = round(sum(r["mandays"] for r in rows), 1)
     row["wall_sf_total"] = round(sum(B[b]["sf"] for b in UNIT_TYPES), 1)
     row["sell_per_wall_sf"] = round(g.get("bid_price", 0) / row["wall_sf_total"], 2) if row["wall_sf_total"] else None
@@ -195,7 +237,10 @@ if __name__ == "__main__":
     ap.add_argument("export"); ap.add_argument("cost_map")
     ap.add_argument("--project", default=""); ap.add_argument("--bid-id", default="")
     ap.add_argument("--json", action="store_true")
+    ap.add_argument("--compact", action="store_true", help="print the export as compact JSON and exit")
     a = ap.parse_args()
+    if a.compact:
+        print(json.dumps(to_compact(a.export), separators=(",", ":"))); sys.exit()
     r = compute(a.export, a.cost_map, a.project, a.bid_id)
     if a.json:
         print(json.dumps(r, indent=1))

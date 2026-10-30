@@ -125,6 +125,10 @@ def prepare(raw: dict) -> dict:
     addenda = bid.get("addenda") or []
     bid["addenda_text"] = ", ".join(str(a) for a in addenda) if addenda else "None received"
     bid["alternates"] = [{"no": i + 1, **a} for i, a in enumerate(bid.get("alternates") or [])]
+    # Optional breakout of the Base Bid by building/area, shown on page 1 ("included in Base Bid"); must add up.
+    bid["breakout"] = [{"label": str(b["label"]), "amount": int(round(float(b["amount"])))} for b in (bid.get("breakout") or [])]
+    if bid["breakout"] and sum(b["amount"] for b in bid["breakout"]) != int(bid["base_bid"]):
+        raise SystemExit(f"breakout adds to {sum(b['amount'] for b in bid['breakout']):,}, not the base bid {int(bid['base_bid']):,}")
     for party in ("owner", "architect"):
         p = d[party]
         p["address_lines"] = p.get("address_lines") or [ln.strip() for ln in re.split(r"\s*\|\s*|\n", p.get("address", "")) if ln.strip()]

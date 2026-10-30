@@ -41,14 +41,17 @@
       </div>
     </div>
 
-    <div class="bid{% if not (bid.alternates or bid.price_bond) %} solo{% endif %}">
+    <div class="bid{% if not (bid.alternates or bid.price_bond or bid.breakout) %} solo{% endif %}">
       <div class="bid-main">
         <div class="bid-lead">We propose to complete the Masonry Work per the Contract Documents for</div>
         <div class="bid-amt">$ {{ bid.base_bid | money }}</div>
         <div class="bid-words">{{ bid.base_bid | words }} Dollars</div>
         <div class="bid-tax{% if not bid.sales_tax_included %} long{% endif %}">{% if bid.sales_tax_included %}<b>Texas sales tax INCLUDED.</b>{% else %}<b>Sales tax on incorporated materials EXCLUDED</b> — Owner tax-exempt; materials purchased tax-free upon receipt of the Owner's Texas Sales and Use Tax Exemption Certificate. Tax on non-incorporated items (equipment, tools, consumables) INCLUDED.{% endif %}</div>
       </div>
-      {% if bid.alternates or bid.price_bond %}<div class="bid-side">
+      {% if bid.alternates or bid.price_bond or bid.breakout %}<div class="bid-side">
+        {% if bid.breakout %}<div class="row brk-head"><span class="k">Base Bid breakout</span><span class="k">incl. in Base Bid</span></div>
+        {% for b in bid.breakout %}<div class="row brk"><span class="k">{{ b.label }}</span><span class="v">$ {{ b.amount | money }}</span></div>
+        {% endfor %}{% endif %}
         {% for a in bid.alternates %}
         <div class="row"><span class="k">Alternate {{ a.no }}</span><span class="v">{{ a.amount | signed_money }}</span></div>
         {% endfor %}

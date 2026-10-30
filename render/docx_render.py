@@ -247,7 +247,8 @@ def build(ctx, out_path: Path):
         run(p, " — Owner tax-exempt; materials purchased tax-free upon receipt of the Owner's Texas Sales and Use Tax "
                "Exemption Certificate. Tax on non-incorporated items (equipment, tools, consumables) INCLUDED.", 9.5)
 
-    extras = [(f"Alternate {a['no']}" + (f" — {a['title']}" if a.get("title") else ""), R.signed_money(a["amount"])) for a in b["alternates"]]
+    extras = [(f"{x['label']} (included in Base Bid)", f"$ {R.money(x['amount'])}") for x in b.get("breakout", [])]
+    extras += [(f"Alternate {a['no']}" + (f" — {a['title']}" if a.get("title") else ""), R.signed_money(a["amount"])) for a in b["alternates"]]
     if b["price_bond"]:
         extras.append(("P&P Bond (on Base Bid)", f"$ {R.money(b['bond_amount'])}"))
     if extras:

@@ -46,7 +46,7 @@
         <div class="bid-lead">We propose to complete the Masonry Work per the Contract Documents for</div>
         <div class="bid-amt">$ {{ bid.base_bid | money }}</div>
         <div class="bid-words">{{ bid.base_bid | words }} Dollars</div>
-        <div class="bid-tax">{% if bid.sales_tax_included %}<b>Texas sales tax INCLUDED.</b>{% else %}<b>Sales tax on incorporated materials EXCLUDED</b> — Owner tax-exempt; materials purchased tax-free upon receipt of the Owner's Texas Sales and Use Tax Exemption Certificate. Tax on non-incorporated items (equipment, tools, consumables) INCLUDED.{% endif %}</div>
+        <div class="bid-tax{% if not bid.sales_tax_included %} long{% endif %}">{% if bid.sales_tax_included %}<b>Texas sales tax INCLUDED.</b>{% else %}<b>Sales tax on incorporated materials EXCLUDED</b> — Owner tax-exempt; materials purchased tax-free upon receipt of the Owner's Texas Sales and Use Tax Exemption Certificate. Tax on non-incorporated items (equipment, tools, consumables) INCLUDED.{% endif %}</div>
       </div>
       {% if bid.alternates or bid.price_bond %}<div class="bid-side">
         {% for a in bid.alternates %}
@@ -87,7 +87,7 @@
         <div class="k">Mobilization</div><div>One (1) included. Each additional, through no fault of FB: <strong>${{ terms.remob_fee | money }}</strong> change order.</div>
         <div class="k">Payment</div><div>Monthly by the 15th. Public work: Tex. Gov't Code §2251.022–.023, 12% interest (§2251.025). Private work: Tex. Prop. Code Ch. 28, 1.5%/month (§28.004). Final within 45 days.</div>
         <div class="k">Retainage</div><div>Only if specified in bid documents or agreed in contract; not more than 5%.</div>
-        <div class="k">Validity</div><div>Void if not accepted by subcontract or LOI by <strong>{{ bid.valid_through }}</strong> (30 days from bid date).</div>
+        <div class="k">Validity</div><div>Void if not accepted by subcontract or LOI by <strong>{{ bid.valid_through }}</strong> ({{ terms.validity_days }} days from bid date).</div>
         <div class="k">Equipment</div><div>FB equipment and scaffold for FB personnel only; use by others requires signed agreement and COI.</div>
         <div class="k">Warranty</div><div>One (1) year, labor and materials. No overtime included. Breakouts for accounting only.</div>
       </div>

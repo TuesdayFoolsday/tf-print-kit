@@ -197,3 +197,17 @@ ol.fb li::marker { font-family: var(--mono); font-size: 10px; color: var(--muted
 .bid-amt { font-family: var(--cond); font-weight: 700; font-size: 46px; letter-spacing: 0.01em; font-variant-numeric: tabular-nums lining-nums; }
 .bid-side .v { font-family: var(--cond); font-weight: 700; font-size: 19px; letter-spacing: 0.01em; font-variant-numeric: tabular-nums lining-nums; }
 .bid.solo { grid-template-columns: minmax(0, 1fr); }
+
+/* exempt-tax statement is longer: keep page 1 from overflowing the signature block (2026-10-29) */
+.bid-tax.long { font-size: 10px; line-height: 1.35; }
+
+/* page-1 fit steps, applied by render.py only when the cover overflows */
+.cover.fit1 .body { padding-top: 18px; padding-bottom: 24px; }
+.cover.fit1 .bid, .cover.fit1 .parties { margin-top: 14px; }
+.cover.fit1 .terms-sum { margin-top: 12px; }
+.cover.fit1 .terms-grid { gap: 6px 14px; }
+.cover.fit2 .proj-name { font-size: 34px; }
+.cover.fit2 .parties, .cover.fit2 .terms-grid { font-size: 11px; line-height: 1.35; }
+.cover.fit3 .bid-amt { font-size: 32px; }
+.cover.fit3 .bid-tax, .cover.fit3 .bid-words { font-size: 10px; }
+.cover.fit3 .terms-grid { gap: 3px 12px; }

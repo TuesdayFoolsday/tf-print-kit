@@ -279,7 +279,7 @@ def build(ctx, out_path: Path):
         ("Payment", "Monthly by the 15th. Public work: Tex. Gov't Code §2251.022–.023, 12% interest (§2251.025). Private work: "
                     "Tex. Prop. Code Ch. 28, 1.5%/month (§28.004). Final within 45 days."),
         ("Retainage", "Only if specified in bid documents or agreed in contract; not more than 5%."),
-        ("Validity", f"Void if not accepted by subcontract or LOI by {b['valid_through']} (30 days from bid date)."),
+        ("Validity", f"Void if not accepted by subcontract or LOI by {b['valid_through']} ({t['validity_days']} days from bid date)."),
         ("Equipment", "FB equipment and scaffold for FB personnel only; use by others requires signed agreement and COI."),
         ("Warranty", "One (1) year, labor and materials. No overtime included. Breakouts for accounting only."),
     ]

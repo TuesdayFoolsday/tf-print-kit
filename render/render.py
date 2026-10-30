@@ -164,7 +164,19 @@ def render_html(ctx: dict) -> str:
 
 
 PAGED_HOOK = """
-<script>window.PagedConfig = { after: (flow) => { window.__pagedTotal = flow.total; } };</script>
+<script>
+// Page 1 is a fixed sheet. Long titles, GC blocks or the exempt-tax statement can push the signature off the
+// bottom; before pagination, tighten spacing in up to three steps until the cover fits.
+window.PagedConfig = {
+  before: async () => {
+    if (document.fonts && document.fonts.ready) { await document.fonts.ready; }
+    const sheet = document.querySelector('.sheet.cover');
+    for (let lvl = 1; sheet && lvl <= 3 && sheet.scrollHeight > sheet.clientHeight + 1; lvl++) { sheet.classList.add('fit' + lvl); }
+    window.__coverFit = sheet ? (sheet.scrollHeight > sheet.clientHeight + 1 ? 'overflow' : sheet.className) : 'none';
+  },
+  after: (flow) => { window.__pagedTotal = flow.total; }
+};
+</script>
 """
 
 
@@ -179,6 +191,9 @@ def to_pdf(html: str, out_pdf: Path) -> int:
         page.goto(tmp_html.resolve().as_uri(), wait_until="load")
         page.wait_for_function("window.__pagedTotal !== undefined", timeout=60_000)
         total = page.evaluate("window.__pagedTotal")
+        fit = page.evaluate("window.__coverFit")
+        if fit == "overflow":
+            print("⚠ page 1 still overflows after tightening — check the signature block", file=sys.stderr)
         page.pdf(path=str(out_pdf), prefer_css_page_size=True, print_background=True)
         browser.close()
     tmp_html.unlink(missing_ok=True)

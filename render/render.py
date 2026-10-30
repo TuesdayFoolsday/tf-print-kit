@@ -133,6 +133,12 @@ def prepare(raw: dict) -> dict:
         p = d[party]
         p["address_lines"] = p.get("address_lines") or [ln.strip() for ln in re.split(r"\s*\|\s*|\n", p.get("address", "")) if ln.strip()]
     d["terms"] = terms
+    # Running header on scope pages is one mono line in ~55% of the page: keep the project name to 34 characters
+    # (project.short_name wins when given), cut at a word boundary with an ellipsis.
+    pn = d["project"].get("short_name") or d["project"]["name"]
+    if len(pn) > 34:
+        pn = pn[:34].rsplit(" ", 1)[0].rstrip(" &·,-") + "…"
+    d["project"]["runhead_name"] = pn
     d["company"] = COMPANY
     d["signer"] = {**SIGNER_DEFAULT, **d.get("signer", {})}
     d["bid_date_iso"] = bid_date.isoformat()

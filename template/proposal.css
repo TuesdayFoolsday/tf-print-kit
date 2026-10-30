@@ -201,15 +201,26 @@ ol.fb li::marker { font-family: var(--mono); font-size: 10px; color: var(--muted
 /* exempt-tax statement is longer: keep page 1 from overflowing the signature block (2026-10-29) */
 .bid-tax.long { font-size: 10px; line-height: 1.35; }
 
+/* larger body text on page 1 (parties, key terms) and the scope pages (2026-10-30) */
+.parties { font-size: 13px; line-height: 1.5; }
+.parties .d.small { font-size: 12px; }
+.terms-grid { font-size: 13px; line-height: 1.5; gap: 10px 14px; }
+.terms-sum .note { font-size: 12px; }
+ol.fb { font-size: 12.5px; line-height: 1.45; }
+ol.fb li { margin: 0 0 3px; }
+ol.fb li::marker { font-size: 11px; }
+
 /* page-1 fit steps, applied by render.py only when the cover overflows */
 .cover.fit1 .body { padding-top: 18px; padding-bottom: 24px; }
 .cover.fit1 .bid, .cover.fit1 .parties { margin-top: 14px; }
 .cover.fit1 .terms-sum { margin-top: 12px; }
 .cover.fit1 .terms-grid { gap: 6px 14px; }
-.cover.fit2 .proj-name { font-size: 34px; }
-.cover.fit2 .parties, .cover.fit2 .terms-grid { font-size: 11px; line-height: 1.35; }
+.cover.fit2 .parties, .cover.fit2 .terms-grid { font-size: 12px; line-height: 1.42; }
+.cover.fit2 .terms-grid { gap: 8px 14px; }
+.cover.fit3 .proj-name { font-size: 34px; }
 .cover.fit3 .bid-amt { font-size: 32px; }
 .cover.fit3 .bid-tax, .cover.fit3 .bid-words { font-size: 10px; }
+.cover.fit3 .parties, .cover.fit3 .terms-grid { font-size: 11px; line-height: 1.35; }
 .cover.fit3 .terms-grid { gap: 3px 12px; }
 
 /* Base Bid breakout rows in the bid block (2026-10-30) */
@@ -217,3 +228,4 @@ ol.fb li::marker { font-family: var(--mono); font-size: 10px; color: var(--muted
 .bid-side .row.brk-head .k { font-size: 9.5px; }
 .bid-side .row.brk .k { text-transform: none; letter-spacing: 0; font-size: 11.5px; color: var(--ink); font-weight: 600; }
 .bid-side .row.brk .v { font-size: 13.5px; }
+

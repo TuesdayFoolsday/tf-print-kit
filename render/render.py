@@ -202,6 +202,8 @@ def to_pdf(html: str, out_pdf: Path) -> int:
         page.wait_for_function("window.__pagedTotal !== undefined", timeout=60_000)
         total = page.evaluate("window.__pagedTotal")
         fit = page.evaluate("window.__coverFit")
+        if fit not in ("sheet cover", "none", None):
+            print(f"page 1 tightened: {fit}", file=sys.stderr)
         if fit == "overflow":
             print("⚠ page 1 still overflows after tightening — check the signature block", file=sys.stderr)
         page.pdf(path=str(out_pdf), prefer_css_page_size=True, print_background=True)

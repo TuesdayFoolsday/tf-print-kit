@@ -1,14 +1,19 @@
 """Compare one export's labor $/SF by unit type to history and print a short plain-text check.
 
-    python3 metrics/bid_check.py <export.XML | compact.json> <cost_map.csv> <history.csv> [--project NAME] [--note TEXT] [--append]
+    python3 metrics/bid_check.py <export.XML | compact.json> <cost_map.csv> <merged Bid Metrics.csv> [--project NAME] [--note TEXT]
+        [--status final|iteration|draft] [--pending-out DIR]     # scheduled runs (B7 / B16)
+        [--append]                                               # chat only: rewrites the CSV given
 
 Labor $/SF (base wage actually priced, before burden and markup) is the judged metric: it is the only one
 flagged. Production, material and sell $/SF are printed for reference. --append adds or replaces this
 project's row in history.csv (only when the export reconciles); --note sets the row's notes (e.g. "radius wall").
+--pending-out writes the row as one pending JSON for '_Knowledge/Pending/Bid Metrics' instead (System Rules B16).
+The range compares against estimate_status = final rows only (iterations and drafts stay for reference).
 """
 import argparse, csv, statistics, sys, os
 sys.path.insert(0, os.path.dirname(__file__))
 import bid_metrics as m
+import metrics_log as ml
 
 TOL = 0.20           # flag labor $/SF more than 20% outside the historical range
 CREW_GAP = 0.05      # flag when Crew Page labor differs from item labor by more than 5%
@@ -26,15 +31,23 @@ def main():
     ap.add_argument("export"); ap.add_argument("cost_map"); ap.add_argument("history")
     ap.add_argument("--project", default=""); ap.add_argument("--note", default="")
     ap.add_argument("--append", action="store_true")
+    ap.add_argument("--status", default="final", choices=["final", "iteration", "draft"])
+    ap.add_argument("--pending-out", default="")
+    ap.add_argument("--by", default="")
     a = ap.parse_args()
     r = m.compute(a.export, a.cost_map, a.project)
+    r["metrics_id"] = ml.make_id("tradesmen", r.get("job_number", ""), r["project"])
+    r["estimate_status"] = a.status
     hist = []
     if os.path.exists(a.history):
         with open(a.history, newline="", encoding="utf-8") as f:
             hist = list(csv.DictReader(f))
     prev = next((h for h in hist if h.get("project") == r["project"]), None)
     r["notes"] = a.note or (prev or {}).get("notes", "")
-    hist = [h for h in hist if h.get("project") != r["project"]]
+    hist = [h for h in hist if h.get("project") != r["project"] and h.get("metrics_id") != r["metrics_id"]]
+    if prev and prev.get("bid_id") and not r.get("bid_id"):
+        r["bid_id"] = prev["bid_id"]
+    rng = [h for h in hist if h.get("estimate_status", "final") == "final"]
 
     out = [f"Bid Check — {r['project']} — ${r['bid_price']:,} — {r['wall_sf_total']:,.0f} wall SF — "
            f"OH {r['oh_pct']:.0%} / profit {r['profit_pct']:.0%}"]
@@ -57,7 +70,7 @@ def main():
             continue
         name = u.replace("_", " ")
         v = r.get(f"{u}_labor_per_sf")
-        past = [(fnum(h.get(f"{u}_labor_per_sf")), h) for h in hist]
+        past = [(fnum(h.get(f"{u}_labor_per_sf")), h) for h in rng]
         past = [(x, h) for x, h in past if x is not None]
         line = f"• {name} {r[f'{u}_sf']:,.0f} SF — labor ${v:,.2f}/SF"
         if past:
@@ -76,6 +89,13 @@ def main():
     out.append(f"{flags} labor flag(s) outside history ±{TOL:.0%}." if flags else "Labor $/SF inside historical range on every unit type.")
     print("\n".join(out))
 
+    if a.pending_out and r["reconciles"] == "y":
+        header, _ = ml.bl.load(a.history)
+        missing = [k for k in r if k not in header]
+        if missing:
+            print("⚠ not written — columns not in Bid Metrics: " + ", ".join(missing))
+            return
+        ml.write_patch(ml.row_patch(r, header, a.by), header, {h.get("metrics_id") for h in hist + ([prev] if prev else [])}, a.pending_out)
     if a.append and r["reconciles"] == "y":
         rows = hist + [r]
         keys = []

@@ -1,6 +1,6 @@
 # print kit
 
-Renders a bid JSON to a PDF.
+Renders a bid JSON to a PDF (the only proposal format; the .docx was dropped Nov 1 2026).
 
     pip install -r requirements.txt   # Playwright + Chromium must already be available
     python3 render/render.py samples/sample.json
@@ -44,3 +44,13 @@ Intake columns and rules: docstring at the top of `jobcost/job_cost.py`.
 
 Runs upload each pending file as a new small file; nothing existing is retyped. Consolidation folds them into the
 base files and moves them to `Merged/`.
+
+## Courier (binary files into SharePoint without typing their bytes)
+
+    python3 courier/send.py send --repo <courier clone> --drive <driveId> --folder <folderItemId> [--replace] <pdf>=<name>
+    python3 courier/send.py wait --repo <courier clone> <id> [--timeout 300]     # 0 ok · 1 failed · 2 no result yet
+
+The file is sealed (`courier/box.py`: X25519 + AES-GCM) into the private courier repo's `inbox/`; that repo's
+GitHub Action (`courier/workflow.yml`) runs `courier/receive.py`: opens it, uploads through Microsoft Graph,
+downloads it back, compares SHA-256, writes `results/<id>.json` (sizes, fingerprints, item ids — no names) and
+empties the inbox. Keys: `send.py keygen` (private key → the repo secret COURIER_PRIVATE_KEY).

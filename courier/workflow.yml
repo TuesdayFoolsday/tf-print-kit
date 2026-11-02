@@ -1,0 +1,47 @@
+# Copy of .github/workflows/deliver.yml in the private courier repo (TuesdayFoolsday/tf-courier).
+# Secrets in that repo: TENANT_ID, CLIENT_ID, CLIENT_SECRET (Entra app with Sites.Selected write on one site)
+# and COURIER_PRIVATE_KEY (from `send.py keygen`). GitHub emails the repo owner when a run fails.
+name: deliver
+on:
+  push:
+    branches: [main]
+    paths: ["inbox/**"]
+  workflow_dispatch:
+concurrency:
+  group: deliver
+  cancel-in-progress: false
+permissions:
+  contents: write
+jobs:
+  deliver:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/checkout@v4
+        with:
+          repository: TuesdayFoolsday/tf-print-kit
+          path: .kit
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install -q cryptography requests
+      - id: run
+        run: python3 .kit/courier/receive.py --repo . || echo "failed=1" >> "$GITHUB_OUTPUT"
+        env:
+          TENANT_ID: ${{ secrets.TENANT_ID }}
+          CLIENT_ID: ${{ secrets.CLIENT_ID }}
+          CLIENT_SECRET: ${{ secrets.CLIENT_SECRET }}
+          COURIER_PRIVATE_KEY: ${{ secrets.COURIER_PRIVATE_KEY }}
+      - name: record results, empty the inbox
+        run: |
+          rm -rf .kit
+          git config user.name "TuesdayFoolsday"
+          git config user.email "TuesdayFoolsday@users.noreply.github.com"
+          git add -A inbox results
+          git diff --cached --quiet && exit 0
+          git commit -q -m "delivered"
+          for i in 1 2 3 4; do git push -q && exit 0; sleep 5; git pull -q --rebase; done
+          exit 1
+      - if: steps.run.outputs.failed == '1'
+        run: echo "::error::A delivery failed — see results/ and the step above" && exit 1

@@ -13,6 +13,8 @@ How it reads a pricing tab (one tab per building; a project's tabs are summed in
     the takeoff's lay-rate man-days: the tab's crew-days cell points at a total cell in the takeoff, and the
     lay-rate rows above it (down to the previous building's total) give net SF and days per wall type.
     That is India's own production split, the analogue of Tradesmen's line-item labor.
+  * Cleaning lines go to their unit type's labor (support:<unit type>, no SF; David 2026-11-02: cleaning is
+    part of the unit labor), falling back to the sister type when that type has no lay-rate SF.
   * Item labor (grout, rebar, flashing, insulation) and material go by item name through the Cost Map rows
     with class INDIA; support items are spread by SF exactly as bid_metrics.py does.
   * Unit-type SF = lay-rate net SF (CMU counted in EA converts at 1.125 EA/SF). Material on a unit type with
@@ -30,6 +32,9 @@ sys.path.insert(0, os.path.dirname(__file__))
 from bid_metrics import STD_WAGES, UNIT_TYPES, OTHER, load_map
 
 SECTIONS = {"CMU MATERIALS", "BRICK MATERIALS", "MATERIAL CLEANING", "LABOR COST"}
+FAMILY = {"cmu_gray": ["cmu_gray", "cmu_arch"], "cmu_arch": ["cmu_arch", "cmu_gray"],
+          "brick": ["brick", "stone", "cast_stone"], "stone": ["stone", "brick", "cast_stone"],
+          "cast_stone": ["cast_stone", "stone", "brick"]}
 ROLE = [("FOREMAN", "Forman"), ("BRICKLAYER", "Bricklayer"), ("LABORER", "Labor"), ("OPERATOR", "Operator")]
 
 
@@ -282,6 +287,11 @@ def compute(path, map_path, tabs, project, metrics_id="", bid_id="", status="", 
         ven = any(t in tab_types for t in ("brick", "stone", "cast_stone"))
         spread(support.get("colored_mortar", []), ["brick", "stone", "cast_stone"] if ven else ["cmu_arch", "cmu_gray"])
         spread(support.get("all", []), UNIT_TYPES)
+        # support:<unit type> (cleaning crews): labor/material onto that unit type, no SF; sister type if absent
+        for u in UNIT_TYPES:
+            if support.get(u):
+                tgt = next((t for t in FAMILY[u] if t in tab_types and B[t]["sf"] > 0), None)
+                spread(support[u], [tgt] if tgt else [])
 
     price = extra["price"]
     row = {"metrics_id": metrics_id, "bid_id": bid_id, "project": project, "job_number": "", "source": "india",

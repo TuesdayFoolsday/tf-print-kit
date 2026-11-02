@@ -193,6 +193,15 @@ def compute(path, map_path, project="", bid_id=""):
     veneer_present = any(B[t]["sf"] > 0 for t in ("brick", "stone", "cast_stone"))
     spread(support.get("colored_mortar", []), ["brick", "stone", "cast_stone"] if veneer_present else ["cmu_arch", "cmu_gray"])
     spread(support.get("all", []), UNIT_TYPES)
+    # support:<unit type> — e.g. a cleaning crew named for its material: labor/material onto that unit type
+    # (no SF), or the sister type when the job has none of it.
+    fam = {"cmu_gray": ["cmu_gray", "cmu_arch"], "cmu_arch": ["cmu_arch", "cmu_gray"],
+           "brick": ["brick", "stone", "cast_stone"], "stone": ["stone", "brick", "cast_stone"],
+           "cast_stone": ["cast_stone", "stone", "brick"]}
+    for u in UNIT_TYPES:
+        if support.get(u):
+            tgt = next((t for t in fam[u] if B[t]["sf"] > 0), None)
+            spread(support[u], [tgt] if tgt else [])
 
     lab_sum = sum(r["labor"] for r in rows)
     mat_sum = sum(r["material"] for r in rows)

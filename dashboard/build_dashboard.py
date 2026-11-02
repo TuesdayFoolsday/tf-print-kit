@@ -2,13 +2,17 @@
 
     python3 dashboard/build_dashboard.py --bid-log "Bid Log 2026.csv" --bid-metrics "Bid Metrics 2026.csv" \
         [--prices "Price Movers.csv"] [--job-cost "Job Cost History.csv"] \
-        [--out Dashboard.xlsx] [--data "Dashboard Data.txt"] [--no-recalc]
+        [--out Dashboard.xlsx] [--data "Dashboard Data.txt"] [--previous DIR] [--no-recalc]
 
 Two outputs:
 * Dashboard.xlsx — the workbook (tables tblBidLog, tblGCs, tblJobTypes, tblLabor, tblJobCost, tblMovers; every summary
   is a formula over those tables). Uploaded to SharePoint ONCE by hand; after that it is never replaced.
-* Dashboard Data.txt — JSON with the rows for each table. Runs upload this text file nightly; a Power Automate flow
-  runs dashboard/load_dashboard_data.ts (an Office Script) to pour it into the workbook's tables.
+* Dashboard Data 1.txt … Dashboard Data 4.txt — the rows for each table as JSON, split into PARTS parts of at most
+  PART_MAX bytes each (System Rules C2: a run never writes a file over 20 KB). A table too big for one part (tblBidLog)
+  continues in the next part. Every part carries the same "set" hash, so the Office Script refuses a mix of nights;
+  the stamp and About text ride in the last part. Unused parts are written empty (still valid). Runs upload the last part nightly
+  and the other parts only when they changed (--previous DIR = the current parts copied from SharePoint).
+  A Power Automate flow (Flow 3) passes the four files to dashboard/load_dashboard_data.ts (an Office Script).
 Formula columns inside tables (in_period, the GC and job-type stats) are kept by the script, never sent as data.
 
 Checks: LibreOffice recalculates a copy, every formula is scanned for errors, and hit rate and labor $/SF are
@@ -442,12 +446,45 @@ def build(a, P):
     wb.save(a.out)
 
 
+PARTS, PART_MAX = 4, 18_000
+
+
+def _dump(obj):
+    return json.dumps(obj, ensure_ascii=False, separators=(",", ":"))
+
+
+def part_paths(path):
+    stem = path[:-4] if path.lower().endswith(".txt") else path
+    return [f"{stem} {k}.txt" for k in range(1, PARTS + 1)]
+
+
 def write_data(path, P):
-    data = {"stamp": P["stamp"], "about": P["about"],
-            "tables": {n: {"columns": c, "rows": r} for n, (c, r) in P["T"].items()}}
-    with open(path, "w", encoding="utf-8") as f:
-        json.dump(data, f, ensure_ascii=False, separators=(",", ":"))
-        f.write("\n")
+    """Split the table rows into PARTS files of <= PART_MAX bytes. Returns (paths, problems)."""
+    import hashlib
+    tables = {n: {"columns": c, "rows": r} for n, (c, r) in P["T"].items()}
+    set_id = hashlib.sha1(_dump(tables).encode()).hexdigest()[:12]
+    parts = [{"part": k, "parts": PARTS, "set": set_id, "tables": {}} for k in range(1, PARTS + 1)]
+    parts[-1].update(stamp=P["stamp"], about=P["about"])  # last part: usually tiny, so quiet nights upload ~2 KB
+    k, problems = 0, []
+    size = lambda d: len(_dump(d).encode()) + 1
+    for name, t in tables.items():
+        parts[k]["tables"].setdefault(name, {"columns": t["columns"], "rows": []})
+        for row in t["rows"]:
+            parts[k]["tables"][name]["rows"].append(row)
+            if size(parts[k]) > PART_MAX:
+                parts[k]["tables"][name]["rows"].pop()
+                if not parts[k]["tables"][name]["rows"]:
+                    del parts[k]["tables"][name]
+                k += 1
+                if k >= PARTS:
+                    problems.append(f"data needs more than {PARTS} parts of {PART_MAX // 1000} KB — add a part (script + Flow 3)")
+                    return [], problems
+                parts[k]["tables"][name] = {"columns": t["columns"], "rows": [row]}
+    paths = part_paths(path)
+    for d, pth in zip(parts, paths):
+        with open(pth, "w", encoding="utf-8") as f:
+            f.write(_dump(d) + "\n")
+    return paths, problems
 
 
 # ---------- recalc + checks ----------
@@ -519,14 +556,15 @@ def main():
     ap.add_argument("--bid-log", required=True); ap.add_argument("--bid-metrics", required=True)
     ap.add_argument("--prices", default=""); ap.add_argument("--job-cost", default="")
     ap.add_argument("--out", default="Dashboard.xlsx"); ap.add_argument("--data", default="Dashboard Data.txt")
+    ap.add_argument("--previous", default="", help="folder holding the current Dashboard Data parts (skip unchanged)")
     ap.add_argument("--period", default="YTD", choices=PERIODS)
     ap.add_argument("--stamp", default=dt.datetime.now().strftime("%Y-%m-%d %H:%M"))
     ap.add_argument("--no-recalc", action="store_true")
     a = ap.parse_args()
     P = prepare(a)
     build(a, P)
-    write_data(a.data, P)
-    problems, nf = [], 0
+    paths, problems = write_data(a.data, P)
+    nf = 0
     if not a.no_recalc:
         # verify on a copy with period = All (checks compare all-time counts)
         out, period = a.out, a.period
@@ -536,19 +574,32 @@ def main():
         if err:
             problems.append(err)
         else:
-            nf, problems = check(a.out, P)
+            nf, cp = check(a.out, P)
+            problems += cp
         os.remove(a.out)
         a.out, a.period = out, period
-    print(f"Dashboard: {a.out} ({os.path.getsize(a.out) // 1024} KB) + {a.data} ({os.path.getsize(a.data) // 1024} KB) · "
+    psz = ", ".join(f"{os.path.getsize(p) // 1024 + 1} KB" for p in paths)
+    print(f"Dashboard: {a.out} ({os.path.getsize(a.out) // 1024} KB) + {len(paths)} data parts ({psz}) · "
           f"{len(P['bl'])} bids · {len(P['bm'])} estimates · {len(P['T']['tblGCs'][1])} GCs · {len(P['T']['tblMovers'][1])} movers · "
           f"{nf} formulas checked")
     for w in P["warn"]:
         print("⚠ " + w)
-    if os.path.getsize(a.data) > 900_000:
-        problems.append("data file over 900 KB")
     for p in problems:
         print("✗ " + p)
-    print("Upload: NO — fix the ✗ lines" if problems else "Upload: yes — the data file only (text, replace 'Dashboard Data.txt')")
+    if problems:
+        print("Upload: NO — fix the ✗ lines")
+        return 1
+    up = []
+    for k, pth in enumerate(paths, 1):
+        prev = os.path.join(a.previous, os.path.basename(pth)) if a.previous else None
+        same = prev and os.path.exists(prev) and open(prev, encoding="utf-8").read().strip() == open(pth, encoding="utf-8").read().strip()
+        if k == len(paths) or not same:
+            up.append(pth)
+    print("Upload: yes — text files, replace each (pass expectedBytes):")
+    for pth in up:
+        print(f"  {os.path.basename(pth)}  ({os.path.getsize(pth)} bytes)")
+    if len(up) < len(paths):
+        print(f"  ({len(paths) - len(up)} unchanged part(s) not uploaded)")
     return 1 if problems else 0
 
 

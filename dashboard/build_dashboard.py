@@ -114,7 +114,10 @@ def gc_groups(rows):
 # ---------- data (shared by the workbook and the data file) ----------
 def prepare(a):
     bl = read_csv(a.bid_log)
-    bm = read_csv(a.bid_metrics)
+    bm_all = read_csv(a.bid_metrics)
+    # Labor history counts final estimates only (System Rules B7/B15): iterations and drafts stay in Bid Metrics
+    # for reference but would skew the medians. Rows from before the estimate_status column count as final.
+    bm = [r for r in bm_all if (r.get("estimate_status") or "final") == "final"]
     movers = [p for p in read_csv(a.prices) if p.get("mover") == "y"] if a.prices and os.path.exists(a.prices) else []
     jc = read_csv(a.job_cost) if a.job_cost and os.path.exists(a.job_cost) else []
     warn = []
@@ -179,7 +182,7 @@ def prepare(a):
             cands = [x for x in bl if toks and all(t in x["project"].lower() for t in toks)]
             if cands and len({x["project"] for x in cands}) == 1:
                 link, how = cands[0], "name"
-        if not link:
+        if not link and not (r.get("source") == "india" and not r.get("bid_id")):   # pre-2026 India rows predate the Bid Log
             warn.append(f"Labor History: {r['project']} not linked to a Bid Log row"
                         + (" (iteration)" if "iteration" in r.get("notes", "") else ""))
         row = [r["project"], r["job_number"], (link or {}).get("job_type") or None, serial(day((link or {}).get("bid_date", ""))),
@@ -206,7 +209,7 @@ def prepare(a):
                                 p["product"], p["supplier"], serial(day(p["quote_date"])), serial(day(p["prior_date"])),
                                 p["project"]] for p in movers])
 
-    about = [f"Rebuilt {a.stamp} from Bid Log 2026.csv ({len(bl)} rows = {len(groups)} projects, {P_MULTI} bid to more than one GC), Bid Metrics 2026.csv ({len(bm)} estimates), "
+    about = [f"Rebuilt {a.stamp} from Bid Log 2026.csv ({len(bl)} rows = {len(groups)} projects, {P_MULTI} bid to more than one GC), Bid Metrics 2026.csv ({len(bm)} final estimates of {len(bm_all)}; iterations and drafts left out), "
              f"Job Cost History.csv ({len(jc)} rows), Price Movers.csv ({len(movers)} movers).",
              "Hit rate (Dashboard, By Job Type) counts each PROJECT once: won if any GC awarded it to us, lost if decided against us, "
              "open while any GC is still out; won ÷ (won + lost), by the project's first bid date. By GC counts each bid to that GC.",

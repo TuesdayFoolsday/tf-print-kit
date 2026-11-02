@@ -113,11 +113,12 @@ def grand_totals(wb):
     for r in wb["Material"]:
         if len(r) > 16 and r[11].strip() == "Totals:":
             g["labor_base_total"], g["material_sheet_total"] = num(r[12]), num(r[16])
-    g["wages"] = {}
+    g["wages"], g["hours"] = {}, {}
     for r in wb.get("Crew Page", []):
         c = [x.strip() for x in r if x.strip()]
         if len(c) >= 7 and c[0] in STD_WAGES:
             g["wages"][c[0]] = round(num(c[-1]), 2)
+            g["hours"][c[0]] = round(num(c[1]) or 0, 1)   # Crew Page "Totals by Labor ID" hours = the whole crew
     g["job_title"] = (wb["Grand Totals"][0] + [""] * 6)[4].strip()
     jn = [c for c in wb["Grand Totals"][0] if c.strip()]
     g["job_number"] = jn[-1] if jn else ""
@@ -135,7 +136,8 @@ def to_compact(path):
     g = grand_totals(wb)
     return {"job_title": g["job_title"], "job_number": g["job_number"],
             "rows": [[r[k] for k in COMPACT_ROW] for r in material_rows(wb)],
-            "totals": {k: g.get(k, 0) for k in COMPACT_TOTALS}, "wages": g.get("wages", {})}
+            "totals": {k: g.get(k, 0) for k in COMPACT_TOTALS}, "wages": g.get("wages", {}),
+            "hours": g.get("hours", {})}
 
 
 def load(path):
@@ -149,6 +151,7 @@ def load(path):
         g = {k: num(c["totals"].get(k, 0)) for k in COMPACT_TOTALS}
         g["job_title"], g["job_number"] = c.get("job_title", ""), c.get("job_number", "")
         g["wages"] = {k: num(v) for k, v in c.get("wages", {}).items()}
+        g["hours"] = {k: num(v) for k, v in c.get("hours", {}).items()}
         return rows, g
     wb = sheets(path)
     return material_rows(wb), grand_totals(wb)
@@ -244,7 +247,12 @@ def compute(path, map_path, project="", bid_id=""):
         problems.append(f"Grand Totals parts {parts:,.0f} vs bid price {g.get('bid_price', 0):,.0f}")
     row["reconciles"] = "n" if problems else "y"
     row["reconcile_notes"] = "; ".join(problems)
-    row["mandays_total"] = round(sum(r["mandays"] for r in rows), 1)
+    row["mandays_total"] = round(sum(r["mandays"] for r in rows), 1)   # Tradesmen man-days = production-mason days
+    # Whole-crew hours from the Crew Page (what job cost compares against: Vista hours are the whole crew)
+    h = g.get("hours", {})
+    for k, col in (("Bricklayer", "bricklayer"), ("Forman", "foreman"), ("Labor", "laborer"), ("Operator", "operator")):
+        row[f"crew_hours_{col}"] = h.get(k) if h else None
+    row["crew_hours"] = round(sum(v or 0 for v in h.values()), 1) if h else None
     row["wall_sf_total"] = round(sum(B[b]["sf"] for b in UNIT_TYPES), 1)
     row["sell_per_wall_sf"] = round(g.get("bid_price", 0) / row["wall_sf_total"], 2) if row["wall_sf_total"] else None
     unmapped = sorted({f'{r["cls"]}:{r["id"]}' for r in rows if bucket_for(rules, r["cls"], r["id"], r["desc"]) is None})

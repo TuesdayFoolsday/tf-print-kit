@@ -81,7 +81,7 @@ def main():
         keys = []
         [keys.append(k) for x in rows for k in x if k not in keys]
         with open(a.history, "w", newline="", encoding="utf-8") as f:
-            w = csv.DictWriter(f, fieldnames=keys); w.writeheader(); w.writerows(rows)
+            w = csv.DictWriter(f, fieldnames=keys, lineterminator="\n"); w.writeheader(); w.writerows(rows)
 
 
 if __name__ == "__main__":

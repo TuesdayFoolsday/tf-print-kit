@@ -23,6 +23,22 @@ Rules:
 * Per-unit-type actuals exist only when the estimate has one unit type (then it gets 100%) or a split row is given.
   Everything else stays job-level.
 * Re-adding a job replaces its rows. Rows from non-final actuals are marked partial.
+* Man-days on both sides are WHOLE-CREW man-days (hours / 8). The estimate side is the Crew Page hours
+  (Bid Metrics crew_hours, by class in crew_hours_<class>), never Tradesmen's mandays_total (production-mason days,
+  not comparable to payroll hours). An estimate without crew_hours gets no man-day comparison (re-run its Bid Check).
+* Single-unit-type job: the unit row takes the job's actuals in the same proportion the estimate gives that unit
+  type of the job's labor (the rest is door frames, scaffold, etc.).
+
+Vista (Viewpoint) mapping for Fenimore-Blythe, confirmed by David 2026-11-01 (JC Detail report, JCDetail.rpt):
+* Cost type 1-L, "Regular Earnings" (and other earnings with hours) = base-wage labor, burdened = n.
+  1-L lines with no hours (Workmen's Comp, Payroll Tax, Health Insurance, 401K Match, Liability Insurance, SUTA, …)
+  are burden: left out of labor, reported as the burden %.
+* Classes: craft 1/Bricklayer -> bricklayer; 1/Journeyman -> bricklayer, except the job's foreman (David names him)
+  -> foreman; 2/Experience -> laborer, except laborers paid $25-28/hr -> operator (FB pays operators as laborers).
+* Phase 01650 Trucking labor -> cost_type other (shown, not in the masonry labor comparison).
+* Material is compared with tax: estimate material base x (1 + its tax rate) vs Vista AP material (tax included).
+* 2-M -> material; 8-I indirects (pallet fees, freight) -> material; 4-E / 5-R rented equipment -> equipment;
+  6-O -> other; 3-S -> sub.
 """
 import argparse, csv, os, sys
 from collections import defaultdict
@@ -107,15 +123,22 @@ def cmd_add(a):
         tot = lambda t: sum(num(r["amount"]) for r in rs if r["cost_type"].strip().lower() == t)
         act_md = hours / 8 if hours else None
         basis = "base wage" if base_ok else ("burdened — hours only" if "y" in burd else "unknown — hours only")
-        cls_txt = " / ".join(f"{k} {by_cls[k]:,.0f}h" for k in ("bricklayer", "foreman", "laborer", "operator") if by_cls[k])
         status = "final" if final else "partial"
         ut_present = [u for u in UNIT_TYPES if num(e.get(f"{u}_sf"))]
         est_lab = sum(num(e.get(f"{u}_labor_base")) or 0 for u in UNIT_TYPES) + sum(
             num(e.get(f"{x}_labor_base")) or 0 for x in ("insulation", "scaffold", "other_items"))
-        est_mat = sum(num(e.get(f"{u}_material_base")) or 0 for u in UNIT_TYPES + ["insulation", "scaffold", "other_items"])
-        est_md, est_sf = num(e.get("mandays_total")), num(e.get("wall_sf_total"))
+        # Vista AP material includes sales tax; the estimate's material base doesn't, so add the estimate's own tax rate
+        tax = 1 + (num(e.get("tax_rate")) or 0)
+        est_mat = tax * sum(num(e.get(f"{u}_material_base")) or 0 for u in UNIT_TYPES + ["insulation", "scaffold", "other_items"])
+        est_hrs, est_sf = num(e.get("crew_hours")), num(e.get("wall_sf_total"))
+        est_md = est_hrs / 8 if est_hrs else None
+        if not est_hrs:
+            problems.append(f"job {job}: estimate has no Crew Page hours (crew_hours) — man-days not compared; re-run its Bid Check")
+        est_cls = {c: num(e.get(f"crew_hours_{c}")) for c in ("bricklayer", "foreman", "laborer", "operator")}
+        cls_txt = " / ".join(f"{c} {by_cls[c]:,.0f}h vs est {est_cls[c] or 0:,.0f}h" for c in ("bricklayer", "foreman", "laborer", "operator")
+                             if by_cls[c] or est_cls[c])
         row = dict(job_number=job, estimate=e["project"], scope="job", through_date=thru, status=status,
-                   est_sf=r2(est_sf), est_mandays=r2(est_md), act_mandays=r2(act_md), mandays_var_pct=pct(act_md, est_md),
+                   est_sf=r2(est_sf), est_mandays=r2(est_md), act_mandays=r2(act_md), mandays_var_pct=pct(act_md, est_md) if est_md else "",
                    est_labor_base=r2(est_lab), act_labor_base=r2(act_lab), labor_var_pct=pct(act_lab, est_lab),
                    est_labor_per_sf=r2(est_lab / est_sf) if est_sf else "",
                    act_labor_per_sf=r2(act_lab / est_sf) if act_lab is not None and est_sf else "",
@@ -133,17 +156,19 @@ def cmd_add(a):
         if len(ut_present) > 1 and not shares:
             row["notes"] = (row["notes"] + "; " if row["notes"] else "") + "multi-unit job: job-level only (add a split to calibrate unit types)"
         for u, sh in shares.items():
-            sf, eu, emd = num(e.get(f"{u}_sf")), num(e.get(f"{u}_labor_base")), num(e.get(f"{u}_mandays"))
-            amd = act_md * sh if act_md else None
-            al = act_lab * sh if act_lab is not None else None
+            sf, eu = num(e.get(f"{u}_sf")), num(e.get(f"{u}_labor_base"))
+            k = (eu / est_lab) if (job not in splits and est_lab and eu) else 1.0   # single type: same share as the estimate
+            emd = est_md * k if est_md else None
+            amd = act_md * sh * k if act_md and est_md else None
+            al = act_lab * sh * k if act_lab is not None else None
             out.append(dict(job_number=job, estimate=e["project"], scope=u, through_date=thru, status=status,
                             est_sf=r2(sf), est_mandays=r2(emd), act_mandays=r2(amd), mandays_var_pct=pct(amd, emd),
                             est_labor_base=r2(eu), act_labor_base=r2(al), labor_var_pct=pct(al, eu),
                             est_labor_per_sf=e.get(f"{u}_labor_per_sf", ""), act_labor_per_sf=r2(al / sf) if al is not None and sf else "",
-                            est_sf_per_manday=e.get(f"{u}_sf_per_manday", ""), act_sf_per_manday=r2(sf / amd) if sf and amd else "",
-                            est_material=r2(num(e.get(f"{u}_material_base"))), act_material="", material_var_pct="",
+                            est_sf_per_manday=r2(sf / emd) if sf and emd else "", act_sf_per_manday=r2(sf / amd) if sf and amd else "",
+                            est_material=r2((num(e.get(f"{u}_material_base")) or 0) * tax), act_material="", material_var_pct="",
                             act_equipment="", act_sub="", act_other="", labor_basis=basis,
-                            hours_by_class=f"{sh:.0%} of job hours" + (" (split)" if job in splits else " (single unit type)"),
+                            hours_by_class=(f"{sh:.0%} of job hours (split)" if job in splits else f"{k:.0%} of job labor (single unit type, as estimated)"),
                             notes=""))
     for p in problems:
         print("⚠ " + p)

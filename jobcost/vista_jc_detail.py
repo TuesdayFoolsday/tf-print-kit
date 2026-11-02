@@ -1,9 +1,10 @@
 """Vista JC Detail (.xls, JCDetail.rpt) -> job_cost.py actuals.csv, per the FB mapping in jobcost/job_cost.py.
 
-    python3 jobcost/vista_jc_detail.py <JC Detail.xls> <actuals.csv> <estimate job_number> "<estimate name>" <through YYYY-MM-DD> <foreman last name>
+    python3 jobcost/vista_jc_detail.py <JC Detail.xls> <actuals.csv> <estimate job_number> "<estimate name>" <through YYYY-MM-DD> <foreman last name or -> [--labor-sub] [--tax-exempt]
 (needs: pip install xlrd). Final = y; ask David before using it on a job that is not closed out."""
 import csv, re, sys, collections, xlrd
 path, out, job, estimate, thru, foreman = sys.argv[1:7]
+flags = dict(labor_sub="y" if "--labor-sub" in sys.argv else "", tax_exempt="y" if "--tax-exempt" in sys.argv else "")
 s = xlrd.open_workbook(path).sheet_by_index(0)
 phase = None; recs = []
 for r in range(s.nrows):
@@ -20,13 +21,13 @@ for r in recs:
 def cls(r):
     craft = r['desc'].split(' ')[0]
     p = person(r['desc'])
-    if foreman.lower() in p.lower(): return 'foreman'
+    if foreman != '-' and foreman.lower() in p.lower(): return 'foreman'
     if craft.startswith('2/'):
         h, c = rate[p]; return 'operator' if 25 <= c / h <= 28.0001 else 'laborer'
     return 'bricklayer'
 rows = []; burden = 0.0
 for r in recs:
-    base = dict(job_number=job, estimate=estimate, through_date=thru, final='y', labor_class='', hours='', burdened='')
+    base = dict(job_number=job, estimate=estimate, through_date=thru, final='y', labor_class='', hours='', burdened='', **flags)
     if r['ct'] == 'L':
         if r['phase'].startswith('01650'):
             rows.append({**base, 'cost_type': 'other', 'amount': f"{r['cost']:.2f}"})   # trucking: shown, not compared
@@ -38,7 +39,7 @@ for r in recs:
         ct = {'M': 'material', 'I': 'material', 'E': 'equipment', 'R': 'equipment', 'O': 'other', 'S': 'sub'}.get(r['ct'], 'other')
         rows.append({**base, 'cost_type': ct, 'amount': f"{r['cost']:.2f}"})
 with open(out, 'w', newline='') as f:
-    w = csv.DictWriter(f, fieldnames=["job_number","estimate","through_date","final","cost_type","labor_class","hours","amount","burdened"], lineterminator="\n")
+    w = csv.DictWriter(f, fieldnames=["job_number","estimate","through_date","final","cost_type","labor_class","hours","amount","burdened","labor_sub","tax_exempt"], lineterminator="\n")
     w.writeheader(); w.writerows(rows)
 tot = sum(r['cost'] for r in recs)
 print(f"{len(rows)} actual lines; JC Detail total ${tot:,.2f}; masonry burden left out ${burden:,.2f}")

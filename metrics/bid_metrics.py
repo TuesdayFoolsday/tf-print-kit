@@ -93,6 +93,7 @@ def grand_totals(wb):
         elif label == "Equipment":
             vals = [num(c) for c in cells if num(c)]
             g["equip_total"] = vals[4] if len(vals) > 4 else (vals[-2] if len(vals) > 1 else 0)
+            g["equip_cost"] = vals[0] if len(vals) > 4 else None
         elif label == "Misc. Sub-Total":
             vals = [num(c) for c in cells if num(c)]
             g["misc_total"] = vals[4] if len(vals) > 4 else (vals[-2] if len(vals) > 1 else 0)
@@ -127,7 +128,8 @@ def grand_totals(wb):
 
 COMPACT_ROW = ["cls", "id", "desc", "amount", "units", "qty", "qty_units", "labor", "material", "mandays"]
 COMPACT_TOTALS = ["material", "misc_taxable", "tax_rate", "mat_total", "crew_total", "equip_total", "misc_total",
-                  "sub_total", "clean_total", "oh_pct", "profit_pct", "bid_price", "labor_base_total", "crew_base"]
+                  "sub_total", "clean_total", "oh_pct", "profit_pct", "bid_price", "labor_base_total", "crew_base",
+                  "crew_cost", "equip_cost"]
 
 
 def to_compact(path):
@@ -253,6 +255,9 @@ def compute(path, map_path, project="", bid_id=""):
     for k, col in (("Bricklayer", "bricklayer"), ("Forman", "foreman"), ("Labor", "laborer"), ("Operator", "operator")):
         row[f"crew_hours_{col}"] = h.get(k) if h else None
     row["crew_hours"] = round(sum(v or 0 for v in h.values()), 1) if h else None
+    # Before OH&P: crew labor with burden, and equipment (what a labor subcontract replaces)
+    row["crew_cost"] = round(g["crew_cost"]) if g.get("crew_cost") else None
+    row["equipment_cost"] = round(g["equip_cost"]) if g.get("equip_cost") else None
     row["wall_sf_total"] = round(sum(B[b]["sf"] for b in UNIT_TYPES), 1)
     row["sell_per_wall_sf"] = round(g.get("bid_price", 0) / row["wall_sf_total"], 2) if row["wall_sf_total"] else None
     unmapped = sorted({f'{r["cls"]}:{r["id"]}' for r in rows if bucket_for(rules, r["cls"], r["id"], r["desc"]) is None})

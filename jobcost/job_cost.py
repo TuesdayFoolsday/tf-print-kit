@@ -13,8 +13,16 @@ actuals.csv — one row per job x cost line (any accounting export mapped to the
     hours           labor hours (labor rows)
     amount          dollars as booked
     burdened        y if the labor amount includes burden/taxes/fringe, n if base wage only, blank = unknown
+    labor_sub       (optional) y on the job's rows when the masonry labor was subcontracted (sub rows = the labor sub)
+    tax_exempt      (optional) y on the job's rows when the job bought material tax-exempt
 splits.csv (optional) — when a job has more than one unit type and the timeline gives a clean break:
     job_number, unit_type (cmu_gray|cmu_arch|brick|stone|cast_stone), labor_hours_share (0-1)
+    (on a labor-sub job the share is the share of the subcontract dollars, e.g. from the sub's unit prices)
+
+Labor-subcontract jobs (labor_sub = y): there are no hours, so the comparison is dollars per SF laid. The sub's price
+carries its own burden, overhead, profit and (if FB rented nothing) equipment, so it is set against the estimate's
+crew labor WITH burden (Crew Labor Cost, before OH&P) plus equipment cost, before OH&P (sub_vs_est_pct); base-wage
+labor is shown for reference only.
 
 Rules:
 * The judged comparison is labor: actual base-wage labor $/SF and man-days vs the estimate's Crew Page labor.
@@ -51,7 +59,8 @@ SCOLS = ["job_number", "unit_type", "labor_hours_share"]
 HCOLS = ["job_number", "estimate", "scope", "through_date", "status", "est_sf", "est_mandays", "act_mandays",
          "mandays_var_pct", "est_labor_base", "act_labor_base", "labor_var_pct", "est_labor_per_sf", "act_labor_per_sf",
          "est_sf_per_manday", "act_sf_per_manday", "est_material", "act_material", "material_var_pct",
-         "act_equipment", "act_sub", "act_other", "labor_basis", "hours_by_class", "notes"]
+         "act_equipment", "act_sub", "act_other", "labor_basis", "hours_by_class",
+         "est_labor_burdened", "est_equipment", "est_labor_equip_per_sf", "act_sub_per_sf", "sub_vs_est_pct", "notes"]
 
 
 def num(v):
@@ -128,11 +137,16 @@ def cmd_add(a):
         est_lab = sum(num(e.get(f"{u}_labor_base")) or 0 for u in UNIT_TYPES) + sum(
             num(e.get(f"{x}_labor_base")) or 0 for x in ("insulation", "scaffold", "other_items"))
         # Vista AP material includes sales tax; the estimate's material base doesn't, so add the estimate's own tax rate
-        tax = 1 + (num(e.get("tax_rate")) or 0)
+        exempt = any(r.get("tax_exempt", "").strip().lower() == "y" for r in rs)
+        tax = 1 if exempt else 1 + (num(e.get("tax_rate")) or 0)
+        is_sub = any(r.get("labor_sub", "").strip().lower() == "y" for r in rs)
+        crew_cost, eq_cost = num(e.get("crew_cost")), num(e.get("equipment_cost"))
+        if is_sub and not crew_cost:
+            problems.append(f"job {job}: estimate has no crew_cost/equipment_cost — re-run its Bid Check")
         est_mat = tax * sum(num(e.get(f"{u}_material_base")) or 0 for u in UNIT_TYPES + ["insulation", "scaffold", "other_items"])
         est_hrs, est_sf = num(e.get("crew_hours")), num(e.get("wall_sf_total"))
         est_md = est_hrs / 8 if est_hrs else None
-        if not est_hrs:
+        if not est_hrs and not is_sub:
             problems.append(f"job {job}: estimate has no Crew Page hours (crew_hours) — man-days not compared; re-run its Bid Check")
         est_cls = {c: num(e.get(f"crew_hours_{c}")) for c in ("bricklayer", "foreman", "laborer", "operator")}
         cls_txt = " / ".join(f"{c} {by_cls[c]:,.0f}h vs est {est_cls[c] or 0:,.0f}h" for c in ("bricklayer", "foreman", "laborer", "operator")
@@ -147,6 +161,17 @@ def cmd_add(a):
                    est_material=r2(est_mat), act_material=r2(tot("material")), material_var_pct=pct(tot("material"), est_mat),
                    act_equipment=r2(tot("equipment")), act_sub=r2(tot("sub")), act_other=r2(tot("other")),
                    labor_basis=basis, hours_by_class=cls_txt, notes=e.get("notes", ""))
+        if is_sub:
+            sub = tot("sub")
+            le = (crew_cost or 0) + (eq_cost or 0)
+            row.update(act_mandays="", mandays_var_pct="", act_sf_per_manday="", act_labor_base="", labor_var_pct="",
+                       act_labor_per_sf="", hours_by_class="",
+                       labor_basis="labor subcontract" + (" incl. equipment" if not tot("equipment") else ""),
+                       est_labor_burdened=r2(crew_cost), est_equipment=r2(eq_cost),
+                       est_labor_equip_per_sf=r2(le / est_sf) if est_sf else "",
+                       act_sub_per_sf=r2(sub / est_sf) if est_sf else "", sub_vs_est_pct=pct(sub, le))
+        if exempt:
+            row["notes"] = (row["notes"] + "; " if row["notes"] else "") + "tax-exempt: material compared without tax"
         out.append(row)
         # unit-type rows: single unit type → 100%; else only from a split
         shares = splits.get(job) or ({ut_present[0]: 1.0} if len(ut_present) == 1 else {})
@@ -157,6 +182,20 @@ def cmd_add(a):
             row["notes"] = (row["notes"] + "; " if row["notes"] else "") + "multi-unit job: job-level only (add a split to calibrate unit types)"
         for u, sh in shares.items():
             sf, eu = num(e.get(f"{u}_sf")), num(e.get(f"{u}_labor_base"))
+            if is_sub:
+                lshare = eu / est_lab if est_lab and eu else 0
+                le_u = (eu or 0) * ((crew_cost or 0) / est_lab if est_lab else 0) + (eq_cost or 0) * lshare
+                su = tot("sub") * sh
+                out.append(dict(job_number=job, estimate=e["project"], scope=u, through_date=thru, status=status,
+                                est_sf=r2(sf), est_labor_base=r2(eu), est_labor_per_sf=e.get(f"{u}_labor_per_sf", ""),
+                                est_material=r2((num(e.get(f"{u}_material_base")) or 0) * tax),
+                                act_sub=r2(su), labor_basis=row["labor_basis"],
+                                hours_by_class=f"{sh:.0%} of the subcontract (split)",
+                                est_labor_burdened=r2((eu or 0) * ((crew_cost or 0) / est_lab if est_lab else 0)),
+                                est_equipment=r2((eq_cost or 0) * lshare),
+                                est_labor_equip_per_sf=r2(le_u / sf) if sf else "",
+                                act_sub_per_sf=r2(su / sf) if sf else "", sub_vs_est_pct=pct(su, le_u), notes=""))
+                continue
             k = (eu / est_lab) if (job not in splits and est_lab and eu) else 1.0   # single type: same share as the estimate
             emd = est_md * k if est_md else None
             amd = act_md * sh * k if act_md and est_md else None
@@ -180,6 +219,11 @@ def cmd_add(a):
         w = csv.DictWriter(f, fieldnames=HCOLS, lineterminator="\n"); w.writeheader(); w.writerows(hist)
     for r in out:
         if r["scope"] == "job":
+            if r.get("act_sub_per_sf"):
+                print(f"{r['job_number']} {r['estimate']} ({r['status']}, {r['labor_basis']}): sub ${float(r['act_sub']):,.0f} = "
+                      f"${float(r['act_sub_per_sf']):,.2f}/SF vs est labor+burden+equipment ${float(r['est_labor_equip_per_sf']):,.2f}/SF "
+                      f"({float(r['sub_vs_est_pct']):+.0%}); material {float(r['material_var_pct'] or 0):+.0%}")
+                continue
             print(f"{r['job_number']} {r['estimate']} ({r['status']}, {r['labor_basis']}): man-days {r['act_mandays']} vs est "
                   f"{r['est_mandays']} ({float(r['mandays_var_pct'] or 0):+.0%})"
                   + (f"; labor ${float(r['act_labor_base']):,.0f} vs ${float(r['est_labor_base']):,.0f} ({float(r['labor_var_pct']):+.0%})"

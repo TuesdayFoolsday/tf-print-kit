@@ -1,11 +1,12 @@
 """Build the preconstruction Dashboard: a workbook of Excel tables + live formulas, and the nightly data file.
 
     python3 dashboard/build_dashboard.py --bid-log "Bid Log 2026.csv" --bid-metrics "Bid Metrics 2026.csv" \
-        [--prices "Price Movers.csv"] [--job-cost "Job Cost History.csv"] \
+        [--units "Bid Metrics Units 2026.csv"] [--prices "Price Movers.csv"] [--job-cost "Job Cost History.csv"] \
         [--out Dashboard.xlsx] [--data "Dashboard Data.txt"] [--previous DIR] [--no-recalc]
 
 Two outputs:
-* Dashboard.xlsx — the workbook (tables tblBidLog, tblGCs, tblJobTypes, tblLabor, tblJobCost, tblMovers; every summary
+* Dashboard.xlsx — the workbook (tables tblBidLog, tblGCs, tblJobTypes, tblLabor, tblUnitStats, tblUnits, tblJobCost,
+  tblMovers; every summary
   is a formula over those tables). Uploaded to SharePoint ONCE by hand; after that it is never replaced.
 * Dashboard Data 1.txt … Dashboard Data 4.txt — the rows for each table as JSON, split into PARTS parts of at most
   PART_MAX bytes each (System Rules C2: a run never writes a file over 20 KB). A table too big for one part (tblBidLog)
@@ -193,6 +194,51 @@ def prepare(a):
         lrows.append(row)
     T["tblLabor"] = (lcols, lrows)
 
+    # tblUnits / tblUnitStats — labor per block, brick or SF of stone by material, size and grout (final estimates only).
+    # Stats are computed here (median, low, high per material + size + grout, plus an "all grout" row per material + size,
+    # the Bid Check's fallback) and sent as data; the period selector does not apply to labor.
+    units_all = read_csv(a.units) if a.units and os.path.exists(a.units) else []
+    if not units_all:
+        warn.append("no Bid Metrics Units given — Labor by Size tab empty")
+    units = [r for r in units_all if (r.get("estimate_status") or "final") == "final" and num(r.get("labor_per_unit"))]
+    proj_notes = {r["metrics_id"]: r.get("notes") or "" for r in bm_all if r.get("metrics_id")}
+    mat_name = dict(UNIT_TYPES)
+    per = lambda m: "block" if m.startswith("cmu") else "brick" if m == "brick" else "SF"
+    size_lbl = lambda m, z: (f'{z}"' if m.startswith("cmu") and z else z.title() if z else "—")
+    GROUT = {"full": "Solid", "unknown": "Not recorded", "n/a": "—", "": "—"}
+    grout_lbl = lambda g: GROUT.get(g, g.replace("oc", '" o.c.') if g.endswith("oc") else g)
+    gorder = lambda g: (0 if g == "full" else int(g[:-2]) if g.endswith("oc") and g[:-2].isdigit() else 900 if g == "unknown" else 950)
+    sorder = lambda z: (int(z) if z.isdigit() else {"modular": 101, "king": 102, "norman": 103, "utility": 104}.get(z, 200))
+    morder = {u: i for i, (u, _) in enumerate(UNIT_TYPES)}
+    ucols = ["material", "size", "grout", "per", "project", "units", "labor_per_unit", "units_per_manday",
+             "material_per_unit", "sell_per_unit", "source", "notes"]
+    urows = []
+    for r in sorted(units, key=lambda r: (morder.get(r["material"], 99), sorder(r["size"]), gorder(r["grout"]), r["project"])):
+        urows.append([mat_name.get(r["material"], r["material"]), size_lbl(r["material"], r["size"]), grout_lbl(r["grout"]),
+                      per(r["material"]), r["project"], num(r["units"]), num(r["labor_per_unit"]), num(r["units_per_manday"]),
+                      num(r["material_per_unit"]), num(r["sell_per_unit"]), r.get("source") or None,
+                      (r.get("notes") or proj_notes.get(r.get("metrics_id"), "")) or None])
+    T["tblUnits"] = (ucols, urows)
+    groups_u = defaultdict(list)
+    for r in units:
+        groups_u[(r["material"], r["size"], r["grout"])].append(r)
+        if len({x["grout"] for x in units if (x["material"], x["size"]) == (r["material"], r["size"])}) > 1:
+            groups_u[(r["material"], r["size"], "*")].append(r)
+    med = lambda xs: round(statistics.median(xs), 2) if xs else None
+    scols = ["material", "size", "grout", "per", "estimates", "median_labor", "low_labor", "low_job", "high_labor", "high_job",
+             "median_units_per_manday", "median_material", "median_sell"]
+    srows = []
+    for (m, z, g), rs in sorted(groups_u.items(), key=lambda kv: (morder.get(kv[0][0], 99), sorder(kv[0][1]),
+                                                                   -1 if kv[0][2] == "*" else gorder(kv[0][2]))):
+        lab = [(num(r["labor_per_unit"]), r["project"]) for r in rs]
+        lo, hi = min(lab), max(lab)
+        srows.append([mat_name.get(m, m), size_lbl(m, z), "All grout" if g == "*" else grout_lbl(g), per(m), len(rs),
+                      med([v for v, _ in lab]), lo[0], lo[1], hi[0], hi[1],
+                      med([num(r["units_per_manday"]) for r in rs if num(r["units_per_manday"])]),
+                      med([num(r["material_per_unit"]) for r in rs if num(r["material_per_unit"])]),
+                      med([num(r["sell_per_unit"]) for r in rs if num(r["sell_per_unit"])])])
+    T["tblUnitStats"] = (scols, srows)
+
     # tblJobCost
     jcols = ["job_number", "estimate", "scope", "through_date", "status", "est_sf", "est_mandays", "act_mandays",
              "mandays_var_pct", "est_labor_base", "act_labor_base", "labor_var_pct", "est_labor_per_sf", "act_labor_per_sf",
@@ -210,7 +256,9 @@ def prepare(a):
                                 p["project"]] for p in movers])
 
     about = [f"Rebuilt {a.stamp} from Bid Log 2026.csv ({len(bl)} rows = {len(groups)} projects, {P_MULTI} bid to more than one GC), Bid Metrics 2026.csv ({len(bm)} final estimates of {len(bm_all)}; iterations and drafts left out), "
-             f"Job Cost History.csv ({len(jc)} rows), Price Movers.csv ({len(movers)} movers).",
+             f"Bid Metrics Units ({len(units)} final rows of {len(units_all)}), Job Cost History.csv ({len(jc)} rows), Price Movers.csv ({len(movers)} movers).",
+             "Labor by Size: labor per block (CMU SF x 1.15), per brick (modular x 7, king x 5, Norman x 4.75, utility x 3.1) or per SF (stone, cast stone), "
+             "Crew Page base wage, final estimates only; 'All grout' rows pool every grout for that material and size (the Bid Check's fallback).",
              "Hit rate (Dashboard, By Job Type) counts each PROJECT once: won if any GC awarded it to us, lost if decided against us, "
              "open while any GC is still out; won ÷ (won + lost), by the project's first bid date. By GC counts each bid to that GC.",
              f"Labor $/SF = Crew Page base wage spread across unit types by line-item labor (before burden and OH&P). Standard wages: {STD_WAGES}.",
@@ -218,7 +266,7 @@ def prepare(a):
     about += [f"{d} ← " + " | ".join(raws) for d, raws in merges] or ["none"]
     about += ["", "⚠ items:"] + (warn or ["none"])
     P_proj = {k: pstatus[idx[0]] for k, idx in groups.items()}
-    return dict(T=T, bl=bl, bm=bm, warn=warn, about=about, proj=P_proj, stamp=f"Rebuilt {a.stamp}. Don't edit data tabs — they reload nightly.")
+    return dict(T=T, bl=bl, bm=bm, units=units, warn=warn, about=about, proj=P_proj, stamp=f"Rebuilt {a.stamp}. Don't edit data tabs — they reload nightly.")
 
 
 # ---------- workbook ----------
@@ -303,7 +351,7 @@ def build(a, P):
     T = P["T"]
     wb = Workbook()
     dash = wb.active; dash.title = "Dashboard"
-    sh = {n: wb.create_sheet(n) for n in ["By GC", "By Job Type", "Labor History", "Job Cost", "Movers", "Bid Log", "About"]}
+    sh = {n: wb.create_sheet(n) for n in ["By GC", "By Job Type", "Labor by Size", "Labor History", "Units", "Job Cost", "Movers", "Bid Log", "About"]}
     for nm, ref in (("Period", "Dashboard!$C$4"), ("PeriodFrom", "Dashboard!$C$5")):
         dn = DefinedName(nm, attr_text=ref)
         if hasattr(wb.defined_names, "add"):
@@ -323,6 +371,17 @@ def build(a, P):
     lf = {"bid_date": DATE, "bid_price": MONEY, "wages_vs_std": PCT}
     lf.update({f"{u}_{p}": f for u, _ in UNIT_TYPES for p, f in PER})
     add_table(sh["Labor History"], "tblLabor", *T["tblLabor"], fmts=lf, widths=[24, 8, 12, 11, 12, 8, 34, 9, 24] + [10] * 25)
+    uf = {k: RATE for k in ("median_labor", "low_labor", "high_labor", "median_material", "median_sell")}
+    uf.update(median_units_per_manday="#,##0.0", estimates=INT)
+    put(sh["Labor by Size"], "A1", "Labor per unit by material, size and grout — Crew Page base wage, final estimates only", font=F_SECTION)
+    put(sh["Labor by Size"], "A2", "Per = block (CMU SF x 1.15), brick (modular x 7, king x 5, Norman x 4.75, utility x 3.1) or SF (stone). "
+        "'All grout' pools every grout for that size. Each estimate behind a row: Units tab.", font=F_NOTE)
+    add_table(sh["Labor by Size"], "tblUnitStats", *T["tblUnitStats"], fmts=uf, start=4,
+              widths=[18, 9, 13, 7, 9, 12, 10, 34, 10, 34, 13, 12, 11])
+    sh["Labor by Size"].freeze_panes = "A5"
+    add_table(sh["Units"], "tblUnits", *T["tblUnits"],
+              fmts={"units": INT, "labor_per_unit": RATE, "units_per_manday": "#,##0.0", "material_per_unit": RATE, "sell_per_unit": RATE},
+              widths=[18, 9, 13, 7, 40, 10, 12, 12, 12, 11, 10, 40])
     jf = {"through_date": DATE}
     jf.update({k: (PCT if k.endswith("var_pct") else RATE if k.endswith("per_sf") else "#,##0.0" if "manday" in k else MONEY)
                for k in T["tblJobCost"][0] if k.startswith(("est_", "act_", "mandays", "labor_var", "material_var"))})
@@ -371,7 +430,7 @@ def build(a, P):
             ws[f"{col}{r}"].border = THIN
     rl = r0 + 2 + len(UNIT_TYPES)
     put(ws, f"A{rl}", f'="Estimates with wages above standard ({STD_WAGES}): "&COUNTIF(tblLabor[wages_vs_std],">0.01")'
-        f'&" of "&COUNTA(tblLabor[project])&". Iterations count toward rates."', font=F_NOTE)
+        f'&" of "&COUNTA(tblLabor[project])&". Final estimates only. Per block / brick by size and grout: Labor by Size tab."', font=F_NOTE)
     chart = BarChart(); chart.type, chart.style, chart.title = "bar", 10, "Median labor $/SF"
     chart.add_data(Reference(ws, min_col=2, min_row=r0 + 1, max_row=r0 + 1 + len(UNIT_TYPES)), titles_from_data=True)
     chart.set_categories(Reference(ws, min_col=1, min_row=r0 + 2, max_row=r0 + 1 + len(UNIT_TYPES)))
@@ -558,6 +617,7 @@ def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--bid-log", required=True); ap.add_argument("--bid-metrics", required=True)
     ap.add_argument("--prices", default=""); ap.add_argument("--job-cost", default="")
+    ap.add_argument("--units", default="", help="merged Bid Metrics Units.csv (labor per unit by material, size, grout)")
     ap.add_argument("--out", default="Dashboard.xlsx"); ap.add_argument("--data", default="Dashboard Data.txt")
     ap.add_argument("--previous", default="", help="folder holding the current Dashboard Data parts (skip unchanged)")
     ap.add_argument("--period", default="YTD", choices=PERIODS)

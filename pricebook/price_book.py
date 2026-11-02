@@ -6,6 +6,13 @@
     python3 pricebook/price_book.py movers <price_book.csv> [--days 90] [--min-pct 3]
     python3 pricebook/price_book.py check  <quotes.json>                        # validate only, no write
     python3 pricebook/price_book.py export <folder> <out.csv> [--days 90]       # latest rows + change vs prior quote; also Price Movers.csv beside it
+    python3 pricebook/price_book.py pending <quotes.json> <out_dir>             # runs: one small file per quote (no rewrite)
+    python3 pricebook/price_book.py merge <folder> <pending_dir>                # chat: fold pending quotes into the monthly files
+  latest / movers / export take --pending <dir>: pending quote files are applied on top of the folder before reading.
+
+Pending files (System Rules B13, v1.8): unattended runs never rewrite a monthly file. Each quote is written as its own
+small JSON in 'Price Book/Pending' ('<quote_date> <supplier> <quote_key>.json', one quote, same format as below).
+Every reader applies them; `merge` folds them in (in chat), then the merged files move to 'Pending/Merged'.
 
 quotes.json = a list of quotes (or one quote object):
   {"source_id": "<email message id or file item id>", "source_url": "<webLink/webUrl>",
@@ -252,8 +259,70 @@ def cmd_append_folder(a):
     return 1 if problems else 0
 
 
-def all_rows(path):
-    return load_folder(path)[0] if is_dir_target(path) else load_csv(path)
+def pending_quotes(pdir):
+    """Every pending quote file in pdir (oldest file name first), as a flat list of quotes."""
+    import glob, os
+    qs = []
+    for f in sorted(glob.glob(os.path.join(pdir, "*.json"))):
+        qs += read_quotes(f)
+    return qs
+
+
+def all_rows(path, pending=None):
+    rows = load_folder(path)[0] if is_dir_target(path) else load_csv(path)
+    if pending:
+        new, _, problems = flatten(pending_quotes(pending))
+        for p in problems:
+            print("⚠ pending quote skipped — " + p)
+        keys = {r["quote_key"] for r in new}
+        rows = [r for r in rows if r["quote_key"] not in keys] + new
+    return rows
+
+
+def safe(s):
+    return re.sub(r'[/\\:"*<>?|]+', "-", str(s)).strip()[:60]
+
+
+def cmd_pending(a):
+    """Validate a quotes JSON and write one small file per quote into out_dir. Nothing else is touched."""
+    import os
+    os.makedirs(a.out_dir, exist_ok=True)
+    quotes = read_quotes(a.quotes)
+    bad = 0
+    for q in quotes:
+        _, qrows, problems = flatten([q])
+        if problems:
+            bad += 1
+            for p in problems:
+                print("⚠ not written — " + p)
+            continue
+        k = qrows[0]["quote_key"]
+        name = f"{iso(q['quote_date'])} {safe(q['supplier'])} {k}.json"
+        path = os.path.join(a.out_dir, name)
+        with open(path, "w", encoding="utf-8") as f:
+            json.dump(q, f, ensure_ascii=False, indent=1)
+            f.write("\n")
+        print(f"Upload (new file in Price Book/Pending): {name}  ({os.path.getsize(path)} bytes)")
+    return 1 if bad else 0
+
+
+def cmd_merge(a):
+    """Fold every pending quote into the monthly files (in chat). Prints the files to upload and the pending
+    files to move to Pending/Merged afterwards."""
+    import glob, os, tempfile
+    files = sorted(glob.glob(os.path.join(a.pending, "*.json")))
+    if not files:
+        print("Nothing pending.")
+        return 0
+    tmp = tempfile.NamedTemporaryFile("w", suffix=".json", delete=False, encoding="utf-8")
+    json.dump(pending_quotes(a.pending), tmp, ensure_ascii=False)
+    tmp.close()
+    a.quotes = tmp.name
+    rc = cmd_append_folder(a)
+    print("Then move these to Price Book/Pending/Merged:")
+    for f in files:
+        print("  " + os.path.basename(f))
+    return rc
 
 
 def cmd_append(a):
@@ -287,7 +356,7 @@ def cmd_check(a):
 
 
 def cmd_latest(a):
-    rows = all_rows(a.csv)
+    rows = all_rows(a.csv, a.pending)
     mark_latest(rows)  # recompute across every file read (a run may have refreshed only one month)
     rows = [r for r in rows if r["latest"] == "y"]
     if a.item:
@@ -305,7 +374,7 @@ def cmd_latest(a):
 
 
 def cmd_movers(a):
-    rows = all_rows(a.csv)
+    rows = all_rows(a.csv, a.pending)
     groups = defaultdict(list)
     for r in rows:
         if r["unit_price"] and r["unit"] != "LS" and r["item"] not in ("other", "delivery", "fuel surcharge") and "allowance" not in r["notes"].lower():
@@ -345,7 +414,7 @@ def _prod(r):
 def cmd_export(a):
     """One small file for the Dashboard: every latest row, with the change vs the same supplier's same product
     quoted at least 30 days earlier. mover = y when that change is >= --min-pct and the latest quote is within --days."""
-    rows = all_rows(a.csv)
+    rows = all_rows(a.csv, a.pending)
     mark_latest(rows)
     hist = defaultdict(list)
     for r in rows:
@@ -389,11 +458,14 @@ def main():
     sp = ap.add_subparsers(dest="cmd", required=True)
     p = sp.add_parser("append"); p.add_argument("quotes"); p.add_argument("csv"); p.set_defaults(f=cmd_append)
     p = sp.add_parser("check"); p.add_argument("quotes"); p.set_defaults(f=cmd_check)
-    p = sp.add_parser("latest"); p.add_argument("csv"); p.add_argument("--item"); p.add_argument("--days", type=int); p.set_defaults(f=cmd_latest)
+    p = sp.add_parser("latest"); p.add_argument("csv"); p.add_argument("--item"); p.add_argument("--days", type=int)
+    p.add_argument("--pending"); p.set_defaults(f=cmd_latest)
     p = sp.add_parser("movers"); p.add_argument("csv"); p.add_argument("--days", type=int, default=90)
-    p.add_argument("--min-pct", type=float, default=3); p.set_defaults(f=cmd_movers)
+    p.add_argument("--min-pct", type=float, default=3); p.add_argument("--pending"); p.set_defaults(f=cmd_movers)
     p = sp.add_parser("export"); p.add_argument("csv"); p.add_argument("out"); p.add_argument("--days", type=int, default=90)
-    p.add_argument("--min-pct", type=float, default=3); p.set_defaults(f=cmd_export)
+    p.add_argument("--min-pct", type=float, default=3); p.add_argument("--pending"); p.set_defaults(f=cmd_export)
+    p = sp.add_parser("pending"); p.add_argument("quotes"); p.add_argument("out_dir"); p.set_defaults(f=cmd_pending)
+    p = sp.add_parser("merge"); p.add_argument("csv"); p.add_argument("pending"); p.set_defaults(f=cmd_merge)
     a = ap.parse_args()
     sys.exit(a.f(a) or 0)
 

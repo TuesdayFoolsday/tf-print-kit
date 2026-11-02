@@ -32,3 +32,14 @@ headline numbers before saying "Upload: yes".
     python3 jobcost/job_cost.py add actuals.csv "Bid Metrics 2026.csv" "Job Cost History.csv" [--splits splits.csv]
 
 Intake columns and rules: docstring at the top of `jobcost/job_cost.py`.
+
+## Pending files (unattended runs never rewrite a large file)
+
+    python3 bidlog/bid_log.py patch "Bid Log 2026.csv" <out_dir> --bid-id <id> --set status=lost --by "hourly 11:52"
+    python3 bidlog/bid_log.py merge "Bid Log 2026.csv" <pending_dir> --out "Merged Bid Log.csv"   # readers merge first
+    python3 pricebook/price_book.py pending quotes.json <out_dir>                                  # one small file per quote
+    python3 pricebook/price_book.py latest "Price Book/" --pending "Price Book/Pending" --item brick
+    python3 pricebook/price_book.py merge "Price Book/" "Price Book/Pending"                       # consolidation, in chat
+
+Runs upload each pending file as a new small file; nothing existing is retyped. Consolidation folds them into the
+base files and moves them to `Merged/`.

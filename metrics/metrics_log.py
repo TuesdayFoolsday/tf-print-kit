@@ -32,6 +32,7 @@ def make_id(source, job_number="", project=""):
 
 
 def validate(p, header, base_ids):
+    KEY = header[0]          # metrics_id (Bid Metrics) or unit_key (Bid Metrics Units)
     errs = []
     if not p.get(KEY):
         errs.append(f"missing {KEY}")
@@ -58,8 +59,9 @@ def validate(p, header, base_ids):
 
 def merge(base_path, pdir):
     header, rows = bl.load(base_path)
-    if not header or header[0] != KEY:
-        raise SystemExit(f"⚠ {base_path}: first column must be {KEY}")
+    if not header or header[0] not in (KEY, "unit_key"):
+        raise SystemExit(f"⚠ {base_path}: first column must be {KEY} or unit_key")
+    K = header[0]
     idx = {r[0]: i for i, r in enumerate(rows)}
     applied, warns = [], []
     for f, p, err in bl.read_patches(pdir):
@@ -69,7 +71,7 @@ def merge(base_path, pdir):
         errs = validate(p, header, set(idx))
         if errs:
             warns.append(f"⚠ {name}: " + "; ".join(errs) + " — skipped"); continue
-        k = p[KEY]
+        k = p.get(K)
         if k not in idx:
             rows.append([k] + [""] * (len(header) - 1)); idx[k] = len(rows) - 1
         row = rows[idx[k]]
@@ -80,6 +82,7 @@ def merge(base_path, pdir):
 
 
 def write_patch(p, header, base_ids, out_dir):
+    KEY = header[0]
     p.setdefault("ts", bl.now_ct())
     errs = validate(p, header, base_ids)
     if errs:
@@ -88,24 +91,26 @@ def write_patch(p, header, base_ids, out_dir):
         return None
     os.makedirs(out_dir, exist_ok=True)
     stamp = p["ts"][:16].replace("T", " ").replace(":", "")
-    name = f"{stamp} {re.sub(r'[^A-Za-z0-9._-]+', '-', p[KEY])}.json"
+    name = f"{stamp} {re.sub(r'[^A-Za-z0-9._-]+', '-', p[KEY])[:110]}.json"
     path = os.path.join(out_dir, name)
     with open(path, "w", encoding="utf-8") as f:
         json.dump(p, f, ensure_ascii=False, indent=1); f.write("\n")
     kind = "change to" if p[KEY] in base_ids else "NEW row"
-    print(f"Upload (new file in _Knowledge/Pending/Bid Metrics): {name}  ({os.path.getsize(path)} bytes) — {kind} {p[KEY]}")
+    folder = "Bid Metrics Units" if KEY == "unit_key" else "Bid Metrics"
+    print(f"Upload (new file in _Knowledge/Pending/{folder}): {name}  ({os.path.getsize(path)} bytes) — {kind} {p[KEY]}")
     return path
 
 
 def row_patch(row, header, by=""):
-    """A whole estimate row (dict from bid_metrics.compute / india_metrics.compute) -> patch setting every column."""
+    """A whole row (estimate or units row) -> patch setting every column."""
+    K = header[0]
     s = {}
     for c in header:
-        if c == KEY or c not in row:
+        if c == K or c not in row:
             continue
         v = row[c]
         s[c] = "" if v is None else (f"{v:g}" if isinstance(v, float) else str(v))
-    return {KEY: row[KEY], "by": by, "set": s}
+    return {K: row[K], "by": by, "set": s}
 
 
 def cmd_merge(a):
@@ -128,7 +133,7 @@ def cmd_patch(a):
         k, _, v = kv.partition("=")
         p["set"][k.strip()] = v
     if a.metrics_id:
-        p[KEY] = a.metrics_id
+        p[header[0]] = a.metrics_id
     p.setdefault("by", a.by or "")
     return 0 if write_patch(p, header, {r[0] for r in rows}, a.out_dir) else 1
 
@@ -136,7 +141,7 @@ def cmd_patch(a):
 def cmd_show(a):
     header, rows, *_ = merge(a.base, a.pending)
     for r in rows:
-        if r[0] == a.metrics_id:
+        if r[0] == a.metrics_id:          # metrics_id or unit_key
             for k, v in zip(header, r):
                 if v:
                     print(f"{k}: {v}")

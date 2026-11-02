@@ -92,10 +92,13 @@ def finish(rows, metrics_id, project, source, status, labor_factor, mat_factor, 
     grout_spec (David) splits a size into grout rows by share; grout_found (from takeoff labels) labels a whole size."""
     spec = parse_grout_spec(grout_spec) if isinstance(grout_spec, str) else (grout_spec or {})
     out = []
-    for (mat, size), x in sorted(rows.items()):
+    for key, x in sorted(rows.items()):
         if not (x["sf"] or x["labor"] or x["material"]):
             continue
-        if mat.startswith("cmu"):
+        mat, size = key[0], key[1]
+        if len(key) == 3:                      # grout already known per wall (by-wall export)
+            parts = [(key[2], 1.0)]
+        elif mat.startswith("cmu"):
             parts = spec.get(size) or [((grout_found or {}).get(size) or "unknown", 1.0)]
         else:
             parts = [("n/a", 1.0)]

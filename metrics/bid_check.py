@@ -38,9 +38,12 @@ def main():
     ap.add_argument("--units", default="", help="merged Bid Metrics Units.csv (history by material, size, grout)")
     ap.add_argument("--units-pending-out", default="")
     ap.add_argument("--grout", default="", help="David's grout per CMU size, e.g. '12:full=0.63,16oc=0.37; 8:32oc'")
+    ap.add_argument("--grout-walls", default="", help="by-wall export: 'Wall name=32oc; Other wall=full' (David)")
     a = ap.parse_args()
-    r = m.compute(a.export, a.cost_map, a.project)
+    wg = dict(x.split("=", 1) for x in (p.strip() for p in a.grout_walls.split(";")) if "=" in x)
+    r = m.compute(a.export, a.cost_map, a.project, wall_grout={k.strip(): v.strip().lower() for k, v in wg.items()})
     raw, (lf, mf) = r.pop("_units_raw"), r.pop("_factors")
+    nwalls = r.pop("walls", 0)
     r["metrics_id"] = ml.make_id("tradesmen", r.get("job_number", ""), r["project"])
     r["estimate_status"] = a.status
     hist = []
@@ -54,7 +57,8 @@ def main():
         r["bid_id"] = prev["bid_id"]
     rng = [h for h in hist if h.get("estimate_status", "final") == "final"]
     urows = U.finish(raw, r["metrics_id"], r["project"], "tradesmen", a.status, lf, mf, grout_spec=a.grout,
-                     basis="Tradesmen line items by size", notes=r["notes"])
+                     basis="Tradesmen by wall (grout per wall, David)" if nwalls else "Tradesmen line items by size",
+                     notes=r["notes"])
     uhist = []
     if a.units and os.path.exists(a.units):
         with open(a.units, newline="", encoding="utf-8") as f:

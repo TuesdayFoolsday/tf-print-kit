@@ -63,11 +63,17 @@ def bucket_for(rules, cls, mid, desc):
 
 
 def material_rows(wb):
-    rows = []
+    """Material-sheet line items. A 'by wall' export carries a wall name row before each wall's lines."""
+    rows, wall = [], ""
     for r in wb["Material"]:
+        cells = [c.strip() for c in r if c and c.strip()]
+        if len(cells) == 1 and cells[0] not in ("Lay-Rate", "Labor", "Material") and not num(cells[0]):
+            wall = cells[0]
+            continue
         if len(r) > 17 and r[1] and r[1] != "Class" and (num(r[4]) or num(r[16]) or num(r[12])):
             rows.append(dict(cls=r[1].strip(), id=r[2].strip(), desc=r[3].strip(), amount=num(r[4]), units=r[5],
-                             qty=num(r[6]), qty_units=r[7], labor=num(r[12]), material=num(r[16]), mandays=num(r[17])))
+                             qty=num(r[6]), qty_units=r[7], labor=num(r[12]), material=num(r[16]), mandays=num(r[17]),
+                             wall=wall))
     return rows
 
 
@@ -113,9 +119,10 @@ def grand_totals(wb):
             g["bid_price"] = vals[-1] if vals else 0
         elif "Performance Bond" in " ".join(cells):
             g["bond_note"] = next(c for c in cells if "Performance Bond" in c)
-    for r in wb["Material"]:
+    g["labor_base_total"] = g["material_sheet_total"] = 0.0
+    for r in wb["Material"]:          # one "Totals:" row per wall in a by-wall export; sum them
         if len(r) > 16 and r[11].strip() == "Totals:":
-            g["labor_base_total"], g["material_sheet_total"] = num(r[12]), num(r[16])
+            g["labor_base_total"] += num(r[12]); g["material_sheet_total"] += num(r[16])
     g["wages"], g["hours"] = {}, {}
     for r in wb.get("Crew Page", []):
         c = [x.strip() for x in r if x.strip()]
@@ -128,7 +135,7 @@ def grand_totals(wb):
     return g
 
 
-COMPACT_ROW = ["cls", "id", "desc", "amount", "units", "qty", "qty_units", "labor", "material", "mandays"]
+COMPACT_ROW = ["cls", "id", "desc", "amount", "units", "qty", "qty_units", "labor", "material", "mandays", "wall"]
 COMPACT_TOTALS = ["material", "misc_taxable", "tax_rate", "mat_total", "crew_total", "equip_total", "misc_total",
                   "sub_total", "clean_total", "oh_pct", "profit_pct", "bid_price", "labor_base_total", "crew_base",
                   "crew_cost", "equip_cost"]
@@ -149,6 +156,8 @@ def load(path):
         c = json.load(open(path, encoding="utf-8"))
         rows = [dict(zip(COMPACT_ROW, r)) for r in c["rows"]]
         for r in rows:
+            r.setdefault("wall", "")
+        for r in rows:
             for k in ("amount", "qty", "labor", "material", "mandays"):
                 r[k] = num(r[k])
             r["qty_units"] = r.get("qty_units") or ""
@@ -161,7 +170,7 @@ def load(path):
     return material_rows(wb), grand_totals(wb)
 
 
-def compute(path, map_path, project="", bid_id=""):
+def compute(path, map_path, project="", bid_id="", wall_grout=None):
     rules = load_map(map_path)
     rows, g = load(path)
     B = {b: dict(sf=0.0, pieces=0.0, labor=0.0, material=0.0, mandays=0.0) for b in UNIT_TYPES + OTHER}
@@ -290,6 +299,40 @@ def compute(path, map_path, project="", bid_id=""):
             mat = d["material"] + sup["material"] * sh
             raw[(b, sz)] = dict(sf=d["sf"], labor=lab * crew_ratio, material=mat, mandays=d["mandays"] + sup["mandays"] * sh,
                                 sell=lab * labor_factor + mat * mat_factor)
+    walls = sorted({r.get("wall", "") for r in rows} - {""})
+    if walls:
+        # By-wall export: each wall's support lines (grout, rebar, ...) stay on that wall's own units, and the
+        # wall's grout (David's per-wall note) labels its CMU rows: (unit type, size, grout).
+        wg = {k.strip().lower(): v for k, v in (wall_grout or {}).items()}
+        raw = {}
+        for w in walls:
+            wr = [r for r in rows if r.get("wall") == w]
+            Dw, sup = {}, {}
+            for r in wr:
+                b = bucket_for(rules, r["cls"], r["id"], r["desc"]) or "other_items"
+                if b in UNIT_TYPES:
+                    sz = U.size_of(b, f'{r["id"]} {r["desc"]}')
+                    d = Dw.setdefault((b, sz), dict(sf=0.0, labor=0.0, material=0.0, mandays=0.0))
+                    d["sf"] += r["amount"]; d["labor"] += r["labor"]; d["material"] += r["material"]; d["mandays"] += r["mandays"]
+                elif b.startswith("support:"):
+                    sup.setdefault(b.split(":", 1)[1], []).append(r)
+            fam = {"cmu": ["cmu_gray", "cmu_arch"], "veneer": ["brick", "stone", "cast_stone"], "all": UNIT_TYPES,
+                   "colored_mortar": ["brick", "stone", "cast_stone"]}
+            for tgt, items in sup.items():
+                targets = fam.get(tgt, [tgt])
+                keys = [k for k in Dw if k[0] in targets and Dw[k]["sf"] > 0] or [k for k in Dw if Dw[k]["sf"] > 0]
+                tot = sum(Dw[k]["sf"] for k in keys)
+                for it in items:
+                    for k in keys:
+                        f = Dw[k]["sf"] / tot
+                        Dw[k]["labor"] += it["labor"] * f; Dw[k]["material"] += it["material"] * f; Dw[k]["mandays"] += it["mandays"] * f
+            g = wg.get(w.strip().lower(), "unknown")
+            for (b, sz), d in Dw.items():
+                key = (b, sz, g if b.startswith("cmu") else "n/a")
+                x = raw.setdefault(key, dict(sf=0.0, labor=0.0, material=0.0, mandays=0.0, sell=0.0))
+                x["sf"] += d["sf"]; x["labor"] += d["labor"] * crew_ratio; x["material"] += d["material"]
+                x["mandays"] += d["mandays"]; x["sell"] += d["labor"] * labor_factor + d["material"] * mat_factor
+        row["walls"] = len(walls)
     row["_units_raw"] = raw
     row["_factors"] = (labor_factor / crew_ratio if crew_ratio else 0, mat_factor)
     return row
@@ -305,7 +348,7 @@ if __name__ == "__main__":
     if a.compact:
         print(json.dumps(to_compact(a.export), separators=(",", ":"))); sys.exit()
     r = compute(a.export, a.cost_map, a.project, a.bid_id)
-    r.pop("_units_raw", None); r.pop("_factors", None)
+    r.pop("_units_raw", None); r.pop("_factors", None); r.pop("walls", None)
     if a.json:
         print(json.dumps(r, indent=1))
     else:

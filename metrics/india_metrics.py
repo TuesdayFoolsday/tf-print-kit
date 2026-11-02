@@ -78,15 +78,27 @@ def crew_cell(ws_f):
     return None, []
 
 
+def _is_lay_row(ws, r, c):
+    for cc in range(c - 1, max(0, c - 14), -1):
+        s = ws.cell(r, cc).value
+        if isinstance(s, str) and s.strip().lower().startswith("lay rate"):
+            return True
+    return False
+
+
 def lay_rows(wbv, refs, all_refs):
     """Lay-rate rows feeding one pricing tab: [(type, sf, days, label)]."""
     out = []
+    direct = bool(refs) and all(_is_lay_row(wbv[sh], int(row), col_ix(col)) for sh, col, row in refs)
     for sh, col, row in refs:
         ws, c, R = wbv[sh], col_ix(col), int(row)
         prev = [x for x in all_refs.get((sh, col), []) if x < R]
         lo = max(prev) if prev else 0
         found, loose = [], []
-        for r in range(lo + 1, R):
+        # The crew-days formula either points at a block total (lay-rate rows above it, down to the previous
+        # building's total) or sums the lay-rate rows themselves (e.g. ROUNDUP(M206+M207)): then use just those.
+        rows = [R] if direct else range(lo + 1, R)
+        for r in rows:
             v = ws.cell(r, c).value
             if not isinstance(v, (int, float)):
                 continue
@@ -171,10 +183,9 @@ def compute(path, map_path, tabs, project, metrics_id="", bid_id="", status="", 
     wbv = openpyxl.load_workbook(path, data_only=True)
     wbf = openpyxl.load_workbook(path, data_only=False)
     all_refs = {}
-    for t in wbf.sheetnames:
-        if "proposal" in t.lower() or t.startswith(("Argyle (", "HEB (", "Talty PS")):
-            for sh, col, row in crew_cell(wbf[t])[1]:
-                all_refs.setdefault((sh, col), []).append(int(row))
+    for t in wbf.sheetnames:          # every pricing tab's crew-days cell bounds the lay-rate blocks above it
+        for sh, col, row in crew_cell(wbf[t])[1]:
+            all_refs.setdefault((sh, col), []).append(int(row))
     B = {b: dict(sf=0.0, pieces=0.0, labor=0.0, labor_takeoff=0.0, material=0.0, mandays=0.0, sell=0.0)
          for b in UNIT_TYPES + OTHER}
     extra = dict(equipment=0.0, misc=0.0, cleaning=0.0, price=0.0, sub=0.0, crew_cost=0.0, equip_cost=0.0)

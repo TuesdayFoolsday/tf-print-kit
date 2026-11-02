@@ -14,6 +14,7 @@ import argparse, csv, statistics, sys, os
 sys.path.insert(0, os.path.dirname(__file__))
 import bid_metrics as m
 import metrics_log as ml
+import units as U
 
 TOL = 0.20           # flag labor $/SF more than 20% outside the historical range
 CREW_GAP = 0.05      # flag when Crew Page labor differs from item labor by more than 5%
@@ -34,8 +35,12 @@ def main():
     ap.add_argument("--status", default="final", choices=["final", "iteration", "draft"])
     ap.add_argument("--pending-out", default="")
     ap.add_argument("--by", default="")
+    ap.add_argument("--units", default="", help="merged Bid Metrics Units.csv (history by material, size, grout)")
+    ap.add_argument("--units-pending-out", default="")
+    ap.add_argument("--grout", default="", help="David's grout per CMU size, e.g. '12:full=0.63,16oc=0.37; 8:32oc'")
     a = ap.parse_args()
     r = m.compute(a.export, a.cost_map, a.project)
+    raw, (lf, mf) = r.pop("_units_raw"), r.pop("_factors")
     r["metrics_id"] = ml.make_id("tradesmen", r.get("job_number", ""), r["project"])
     r["estimate_status"] = a.status
     hist = []
@@ -48,6 +53,13 @@ def main():
     if prev and prev.get("bid_id") and not r.get("bid_id"):
         r["bid_id"] = prev["bid_id"]
     rng = [h for h in hist if h.get("estimate_status", "final") == "final"]
+    urows = U.finish(raw, r["metrics_id"], r["project"], "tradesmen", a.status, lf, mf, grout_spec=a.grout,
+                     basis="Tradesmen line items by size", notes=r["notes"])
+    uhist = []
+    if a.units and os.path.exists(a.units):
+        with open(a.units, newline="", encoding="utf-8") as f:
+            uhist = [h for h in csv.DictReader(f) if h.get("metrics_id") != r["metrics_id"]
+                     and h.get("estimate_status", "final") == "final" and U.metric(h) is not None]
 
     out = [f"Bid Check — {r['project']} — ${r['bid_price']:,} — {r['wall_sf_total']:,.0f} wall SF — "
            f"OH {r['oh_pct']:.0%} / profit {r['profit_pct']:.0%}"]
@@ -65,30 +77,45 @@ def main():
         out.append(f"⚠ items not in Cost Map (counted as other): {r['unmapped_items']}")
 
     flags = 0
-    for u in m.UNIT_TYPES:
-        if not r.get(f"{u}_sf"):
+    proj = {h.get("metrics_id"): h for h in hist}
+    tag = lambda h: h["project"] + (f" ({proj[h['metrics_id']]['notes']})" if proj.get(h["metrics_id"], {}).get("notes") else "")
+    for u in urows:
+        v = U.metric(u)
+        if v is None:
             continue
-        name = u.replace("_", " ")
-        v = r.get(f"{u}_labor_per_sf")
-        past = [(fnum(h.get(f"{u}_labor_per_sf")), h) for h in rng]
-        past = [(x, h) for x, h in past if x is not None]
-        line = f"• {name} {r[f'{u}_sf']:,.0f} SF — labor ${v:,.2f}/SF"
-        if past:
-            lo, hi = min(past, key=lambda t: t[0]), max(past, key=lambda t: t[0])
-            med = statistics.median(x for x, _ in past)
-            tag = lambda t: t[1]["project"] + (f" ({t[1]['notes']})" if t[1].get("notes") else "")
+        per = "SF" if u["material"] in ("stone", "cast_stone") else ("block" if u["material"].startswith("cmu") else "brick")
+        label = {"cmu_gray": "gray CMU", "cmu_arch": "arch CMU"}.get(u["material"], u["material"].replace("_", " "))
+        size = (f'{u["size"]}" ' if u["material"].startswith("cmu") else (f'{u["size"]} ' if u["material"] == "brick" else ""))
+        grout = f' · grout {u["grout"]}' if u["material"].startswith("cmu") else ""
+        same = lambda h, keys: all(h.get(k) == u[k] for k in keys)
+        basis, past = "", []
+        if u["material"].startswith("cmu") and u["grout"] not in ("unknown", "mixed"):
+            past = [h for h in uhist if same(h, ("material", "size", "grout"))]
+            basis = "same size + grout"
+        if len(past) < 3:
+            past = [h for h in uhist if same(h, ("material", "size"))]
+            basis = "same size, any grout" if u["material"].startswith("cmu") else "same size"
+        line = f"• {size}{label}{grout} — {u['units']:,} {per}s ({u['sf']:,.0f} SF) — labor ${v:,.2f}/{per}"
+        pv = [(U.metric(h), h) for h in past]
+        if pv:
+            lo, hi = min(pv, key=lambda t: t[0]), max(pv, key=lambda t: t[0])
+            med = statistics.median(x for x, _ in pv)
             mark = ""
             if v < lo[0] * (1 - TOL) or v > hi[0] * (1 + TOL):
                 mark = " ⚠ " + ("HIGH" if v > hi[0] else "LOW"); flags += 1
-            line += (f"{mark} | median ${med:,.2f} · low ${lo[0]:,.2f} {tag(lo)} · high ${hi[0]:,.2f} {tag(hi)} · n={len(past)}")
+            line += f"{mark} | {basis}: median ${med:,.2f} · low ${lo[0]:,.2f} {tag(lo[1])} · high ${hi[0]:,.2f} {tag(hi[1])} · n={len(pv)}"
         else:
-            line += " | no history yet"
-        ref = [f"{r.get(f'{u}_sf_per_manday') or '–'} SF/man-day",
-               f"material ${r.get(f'{u}_material_per_sf', 0):,.2f}/SF", f"sell ${r.get(f'{u}_sell_per_sf', 0):,.2f}/SF"]
-        out.append(line + "\n   ref: " + " · ".join(ref))
-    out.append(f"{flags} labor flag(s) outside history ±{TOL:.0%}." if flags else "Labor $/SF inside historical range on every unit type.")
+            line += " | no history for this size yet"
+        out.append(line + f"\n   ref: {u['units_per_manday'] or '–'} {per}s/man-day · material ${u['material_per_unit'] or 0}/{per} · sell ${u['sell_per_unit'] or 0}/{per}")
+    if not uhist:
+        out.append("(no Bid Metrics Units history given — run with --units)")
+    out.append(f"{flags} labor flag(s) outside history ±{TOL:.0%}." if flags else "Labor inside the historical range on every material and size.")
     print("\n".join(out))
 
+    if a.units_pending_out and r["reconciles"] == "y" and a.units:
+        uheader, _ = ml.bl.load(a.units)
+        for u in urows:
+            ml.write_patch(ml.row_patch(u, uheader, a.by), uheader, set(), a.units_pending_out)
     if a.pending_out and r["reconciles"] == "y":
         header, _ = ml.bl.load(a.history)
         missing = [k for k in r if k not in header]

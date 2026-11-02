@@ -30,6 +30,7 @@ from openpyxl.utils import column_index_from_string as col_ix
 
 sys.path.insert(0, os.path.dirname(__file__))
 from bid_metrics import STD_WAGES, UNIT_TYPES, OTHER, load_map
+import units as U
 
 SECTIONS = {"CMU MATERIALS", "BRICK MATERIALS", "MATERIAL CLEANING", "LABOR COST"}
 FAMILY = {"cmu_gray": ["cmu_gray", "cmu_arch"], "cmu_arch": ["cmu_arch", "cmu_gray"],
@@ -84,6 +85,24 @@ def _is_lay_row(ws, r, c):
         if isinstance(s, str) and s.strip().lower().startswith("lay rate"):
             return True
     return False
+
+
+def block_grout(wbv, refs, all_refs):
+    """Grout per CMU size from the takeoff rows of this building's block ('Fully Grout', '#5 @ 32" O.C.')."""
+    seen = {}
+    for sh, col, row in refs:
+        ws, c, R = wbv[sh], col_ix(col), int(row)
+        prev = [x for x in all_refs.get((sh, col), []) if x < R]
+        lo = max(prev) if prev else 0
+        for r in range(lo + 1, R + 1):
+            for cell in ws[r][:c]:
+                v = cell.value
+                if not isinstance(v, str) or "cmu" not in v.lower():
+                    continue
+                sz, g = U.cmu_size(v), U.grout_of(v)
+                if sz and g:
+                    seen.setdefault(sz, set()).add(g)
+    return {sz: (next(iter(gs)) if len(gs) == 1 else "mixed") for sz, gs in seen.items()}
 
 
 def lay_rows(wbv, refs, all_refs):
@@ -194,6 +213,11 @@ def compute(path, map_path, tabs, project, metrics_id="", bid_id="", status="", 
     problems, warn, unmapped = [], [], set()
     oh, prof, taxes = set(), set(), set()
     lab_base_all = lab_sell_all = mat_base_all = mat_sell_all = 0.0
+    Z = {}                                   # Bid Metrics Units: (unit type, size) -> sf, labor, material, mandays, sell
+    grout_found = {}
+
+    def z(t, sz):
+        return Z.setdefault((t, sz), dict(sf=0.0, labor=0.0, material=0.0, mandays=0.0, sell=0.0))
     for tab in tabs:
         T = read_tab(wbv, wbf, tab, rules, all_refs)
         tt = T["totals"]
@@ -216,10 +240,28 @@ def compute(path, map_path, tabs, project, metrics_id="", bid_id="", status="", 
         # lay-rate weights
         lay = T["lay"]
         typed = [x for x in lay if x[0] in UNIT_TYPES]
-        days_by = {}
+        days_by, zdays, tabsz = {}, {}, {}
         for t, sf, d, lab in typed:
             days_by[t] = days_by.get(t, 0) + d
             B[t]["sf"] += sf
+            sz = U.size_of(t, lab)
+            zdays[(t, sz)] = zdays.get((t, sz), 0) + d
+            tabsz.setdefault(t, {}).setdefault(sz, 0.0)
+            tabsz[t][sz] += sf
+            z(t, sz)["sf"] += sf
+        for sz, g in block_grout(wbv, crew_cell(wbf[tab])[1], all_refs).items():
+            grout_found[sz] = g if grout_found.get(sz, g) == g else "mixed"
+
+        def zshare(t, name):
+            """(size, weight) pairs for a line of unit type t: its own size when named and laid in this tab, else by SF."""
+            if t not in ("cmu_gray", "cmu_arch", "brick"):
+                return [("", 1.0)]
+            sz = U.size_of(t, name) if name else ""
+            sizes = tabsz.get(t, {})
+            if sz and sz != "?" and (sz in sizes or not sizes):
+                return [(sz, 1.0)]
+            tot = sum(sizes.values())
+            return [(k, v / tot) for k, v in sizes.items()] if tot else [(sz or "?", 1.0)]
         dtot = sum(days_by.values())
         if not dtot:
             warn.append(f"{tab}: no lay-rate rows — crew labor counted as other items")
@@ -237,6 +279,9 @@ def compute(path, map_path, tabs, project, metrics_id="", bid_id="", status="", 
             B[t]["labor_takeoff"] += crew_base * w
             B[t]["mandays"] += mason_days * w
             B[t]["sell"] += crew_cost * mult * w
+        for (t, sz), d in zdays.items():
+            w = d / dtot
+            zz = z(t, sz); zz["labor"] += crew_base * w; zz["mandays"] += mason_days * w; zz["sell"] += crew_cost * mult * w
         extra["crew_cost"] += crew_cost
         lab_base_all += crew_base; lab_sell_all += crew_cost * mult
         # items
@@ -268,6 +313,10 @@ def compute(path, map_path, tabs, project, metrics_id="", bid_id="", status="", 
             x["labor"] += r["lab_base"]; x["labor_takeoff"] += r["lab_base"]
             x["material"] += r["mat_base"] + r["eq_base"]
             x["sell"] += cost * mult
+            if b in UNIT_TYPES:
+                for sz, w in zshare(b, r["name"]):
+                    zz = z(b, sz); zz["labor"] += r["lab_base"] * w; zz["material"] += (r["mat_base"] + r["eq_base"]) * w
+                    zz["sell"] += cost * mult * w
             if b in UNIT_TYPES and str(r["unit"]).upper().startswith("EA") and b != "cast_stone":
                 x["pieces"] += r["qty"]
             lab_base_all += r["lab_base"]; lab_sell_all += r["lab"] * mult
@@ -290,6 +339,20 @@ def compute(path, map_path, tabs, project, metrics_id="", bid_id="", status="", 
                     B[t]["labor_takeoff"] += r["lab_base"] * w / tot
                     B[t]["material"] += (r["mat_base"] + r["eq_base"]) * w / tot
                     B[t]["sell"] += cost * mult * w / tot
+                    if t in UNIT_TYPES:
+                        # a size-named support line (8" CMU GROUT, 12" WIRE REINFORCEMENT) stays with its size
+                        named = U.cmu_size(r["name"]) if t.startswith("cmu") else ""
+                        own = [t2 for t2 in wts if t2.startswith("cmu") and named in tabsz.get(t2, {})] if named else []
+                        if named and own:
+                            if t != own[0]:
+                                continue
+                            pairs, scale = [(named, 1.0)], 1.0
+                        else:
+                            pairs, scale = zshare(t, ""), w / tot
+                        for sz, w2 in pairs:
+                            zz = z(t, sz); f = scale * w2
+                            zz["labor"] += r["lab_base"] * f; zz["material"] += (r["mat_base"] + r["eq_base"]) * f
+                            zz["sell"] += cost * mult * f
         for r in sum(support.values(), []):
             lab_base_all += r["lab_base"]; lab_sell_all += r["lab"] * mult
             mat_base_all += r["mat_base"] + r["eq_base"]; mat_sell_all += (r["mat"] + r["eq"]) * mult
@@ -360,6 +423,8 @@ def compute(path, map_path, tabs, project, metrics_id="", bid_id="", status="", 
     for k, col in (("Bricklayer", "bricklayer"), ("Forman", "foreman"), ("Labor", "laborer"), ("Operator", "operator")):
         row[f"crew_hours_{col}"] = round(hours[k], 1) if hours[k] else ""
     row["crew_hours"] = round(sum(hours.values()), 1)
+    row["_units_raw"] = Z
+    row["_grout_found"] = grout_found
     row["crew_cost"] = round(extra["crew_cost"])
     row["equipment_cost"] = round(extra["equip_cost"])
     return row
@@ -374,6 +439,7 @@ if __name__ == "__main__":
     ap.add_argument("--notes", default=""); ap.add_argument("--json", action="store_true")
     a = ap.parse_args()
     r = compute(a.workbook, a.cost_map, a.tabs, a.project, a.metrics_id, a.bid_id, a.status, a.notes)
+    r.pop("_units_raw", None); r.pop("_grout_found", None)
     if a.json:
         print(json.dumps(r, indent=1, ensure_ascii=False))
     else:

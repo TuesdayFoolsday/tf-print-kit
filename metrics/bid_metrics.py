@@ -7,7 +7,9 @@ Buckets labor/material by unit type using the cost map, spreads support items (g
 anchors, flashing...) onto the units they serve, loads labor and material to selling price using the
 export's own burden, tax and OH&P, and reconciles the bucketed total to the export's bid price.
 """
-import argparse, csv, json, re, sys
+import argparse, csv, json, os, re, sys
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import units as U
 import xml.etree.ElementTree as ET
 
 SS = "urn:schemas-microsoft-com:office:spreadsheet"
@@ -163,6 +165,7 @@ def compute(path, map_path, project="", bid_id=""):
     rules = load_map(map_path)
     rows, g = load(path)
     B = {b: dict(sf=0.0, pieces=0.0, labor=0.0, material=0.0, mandays=0.0) for b in UNIT_TYPES + OTHER}
+    D = {b: {} for b in UNIT_TYPES}      # direct line items per unit type and size (Bid Metrics Units)
     support = {"cmu": [], "veneer": [], "colored_mortar": [], "all": []}
     for r in rows:
         b = bucket_for(rules, r["cls"], r["id"], r["desc"]) or "other_items"
@@ -171,6 +174,9 @@ def compute(path, map_path, project="", bid_id=""):
             if b in UNIT_TYPES:
                 x["sf"] += r["amount"]
                 x["pieces"] += r["qty"] if r["qty_units"].lower().startswith("piece") else 0
+                sz = U.size_of(b, f'{r["id"]} {r["desc"]}')
+                d = D[b].setdefault(sz, dict(sf=0.0, labor=0.0, material=0.0, mandays=0.0))
+                d["sf"] += r["amount"]; d["labor"] += r["labor"]; d["material"] += r["material"]; d["mandays"] += r["mandays"]
             elif b == "insulation":
                 x["sf"] += r["amount"]
             x["labor"] += r["labor"]; x["material"] += r["material"]; x["mandays"] += r["mandays"]
@@ -271,6 +277,21 @@ def compute(path, map_path, project="", bid_id=""):
     row["sell_per_wall_sf"] = round(g.get("bid_price", 0) / row["wall_sf_total"], 2) if row["wall_sf_total"] else None
     unmapped = sorted({f'{r["cls"]}:{r["id"]}' for r in rows if bucket_for(rules, r["cls"], r["id"], r["desc"]) is None})
     row["unmapped_items"] = "; ".join(unmapped)
+    # Bid Metrics Units: each unit type split by size. Direct lines go to their own size; support spread onto
+    # the type (grout, rebar, joint reinforcement, flashing...) follows each size's SF share.
+    raw = {}
+    for b in UNIT_TYPES:
+        dsum = {k: sum(d[k] for d in D[b].values()) for k in ("labor", "material", "mandays")}
+        sup = {k: B[b][k] - dsum[k] for k in dsum}
+        sft = sum(d["sf"] for d in D[b].values())
+        for sz, d in D[b].items():
+            sh = d["sf"] / sft if sft else 0
+            lab = (d["labor"] + sup["labor"] * sh)
+            mat = d["material"] + sup["material"] * sh
+            raw[(b, sz)] = dict(sf=d["sf"], labor=lab * crew_ratio, material=mat, mandays=d["mandays"] + sup["mandays"] * sh,
+                                sell=lab * labor_factor + mat * mat_factor)
+    row["_units_raw"] = raw
+    row["_factors"] = (labor_factor / crew_ratio if crew_ratio else 0, mat_factor)
     return row
 
 
@@ -284,6 +305,7 @@ if __name__ == "__main__":
     if a.compact:
         print(json.dumps(to_compact(a.export), separators=(",", ":"))); sys.exit()
     r = compute(a.export, a.cost_map, a.project, a.bid_id)
+    r.pop("_units_raw", None); r.pop("_factors", None)
     if a.json:
         print(json.dumps(r, indent=1))
     else:

@@ -87,8 +87,11 @@ def grand_totals(wb):
         elif label == "Misc. Taxable Costs":
             g["misc_taxable"] = num(next((c for c in cells[1:] if num(c)), 0))
         elif label == "Tax":
-            vals = [num(c) for c in cells if num(c)]
-            g["tax_rate"] = vals[0] if vals else 0.0
+            # Row is: label, rate, tax amount, OH %, profit %. Read the rate by position:
+            # a 0% rate (tax-exempt bid) must not fall through to the OH % cell.
+            after = cells[cells.index("Tax") + 1:]
+            first = next((c for c in after if c != ""), "0")
+            g["tax_rate"] = num(first)
         elif label.startswith("Material + Misc"):
             vals = [num(c) for c in cells if num(c)]
             g["mat_cost_tax"], g["mat_oh"], g["mat_profit"], g["mat_ohp"], g["mat_total"] = vals[:5]

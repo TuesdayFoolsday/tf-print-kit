@@ -183,7 +183,10 @@ def prepare(a):
             cands = [x for x in bl if toks and all(t in x["project"].lower() for t in toks)]
             if cands and len({x["project"] for x in cands}) == 1:
                 link, how = cands[0], "name"
-        if not link and not (r.get("source") == "india" and not r.get("bid_id")):   # pre-2026 India rows predate the Bid Log
+        jn = str(r.get("job_number") or "").strip()
+        pre_log = (r.get("source") == "india" and not r.get("bid_id")) or \
+                  (r.get("source") == "tradesmen" and jn[:2].isdigit() and int(jn[:2]) < 26)   # bid before the 2026 Bid Log
+        if not link and not pre_log:
             warn.append(f"Labor History: {r['project']} not linked to a Bid Log row"
                         + (" (iteration)" if "iteration" in r.get("notes", "") else ""))
         row = [r["project"], r["job_number"], (link or {}).get("job_type") or None, serial(day((link or {}).get("bid_date", ""))),

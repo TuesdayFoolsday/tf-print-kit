@@ -11,6 +11,10 @@ sealed and removed after delivery; results carry only sizes, fingerprints and it
         [--replace] <local file>[=<SharePoint file name>] ...
     python3 courier/send.py wait --repo /tmp/courier <id> [--timeout 300]
     python3 courier/send.py directory --repo /tmp/courier <contacts.csv>   # System Rules B3: new Directory contacts
+    python3 courier/send.py award --repo /tmp/courier <award.json>            # System Rules A16: award hand-off
+    python3 courier/send.py job-update --repo /tmp/courier <job_update.json>  # B18: David's answers (bid_id or vista)
+    python3 courier/send.py job-load --repo /tmp/courier <job_load.json>      # once: jobs open before the award robot
+    python3 courier/send.py tick --repo /tmp/courier [--nightly]              # B18: start the Operations robot now
     python3 courier/send.py fetch --repo /tmp/courier --drive <driveId> (--item <itemId> | --path "<path in library>") \
         --out <local file> [--timeout 300]                          # exact copy of a SharePoint file
     python3 courier/send.py fetch --repo /tmp/courier --collect <id> --out <local file>   # after a timeout
@@ -231,13 +235,14 @@ def cmd_directory(a: argparse.Namespace) -> None:
 
 
 def _push_trigger(a: argparse.Namespace, name: str, required: tuple[str, ...], label: str) -> None:
-    """Validate a small JSON request and hand it to the courier repo's `operations` Action."""
+    """Validate a small JSON request and hand it to the courier repo's `operations` Action.
+    A required key written "a|b" is satisfied by either key."""
     src = Path(a.json)
     try:
         req = json.loads(src.read_text(encoding="utf-8"))
     except (OSError, ValueError) as e:
         sys.exit(f"✗ not written: {src} isn't readable JSON ({e})")
-    missing = [k for k in required if not req.get(k)]
+    missing = [k for k in required if not any(req.get(x) for x in k.split("|"))]
     if missing:
         sys.exit(f"✗ not written: missing {', '.join(missing)}")
     repo = Path(a.repo)
@@ -249,8 +254,8 @@ def _push_trigger(a: argparse.Namespace, name: str, required: tuple[str, ...], l
     if git(repo, "diff", "--cached", "--quiet", check=False).returncode == 0:
         print(f"= same {label} as the last hand-off; nothing pushed")
         return
-    push(repo, f"operations: {label} {req.get('bid_id', '')}")
-    result = name.replace("job_update", "update").replace(".json", "")
+    push(repo, f"operations: {label} {req.get('bid_id') or req.get('vista') or ''}".rstrip())
+    result = name.replace("job_update", "update").replace("job_load", "load").replace(".json", "")
     print(f"✓ {label} handed to the operations Action; result in results/operations-{result}-latest.json")
 
 
@@ -260,8 +265,28 @@ def cmd_award(a: argparse.Namespace) -> None:
 
 
 def cmd_job_update(a: argparse.Namespace) -> None:
-    """Hand David's answers for a Jobs row to the Operations robot: pushes trigger/job_update.json."""
-    _push_trigger(a, "job_update.json", ("bid_id", "set"), "job update")
+    """Hand David's answers for a Jobs row to the Operations robot: pushes trigger/job_update.json.
+    The row is found by bid_id (award questions) or vista (jobs loaded from Vista; "done or demobilized?")."""
+    _push_trigger(a, "job_update.json", ("bid_id|vista", "set"), "job update")
+
+
+def cmd_job_load(a: argparse.Namespace) -> None:
+    """One time, from chat with David's OK: Jobs rows for jobs open before the award robot (trigger/job_load.json)."""
+    _push_trigger(a, "job_load.json", ("jobs",), "job load")
+
+
+def cmd_tick(a: argparse.Namespace) -> None:
+    """Start the Operations robot now (System Rules B18): the hourly run ticks at its start, the nightly run with
+    --nightly. GitHub's own schedule is only a backup; it comes hours late or not at all."""
+    repo = Path(a.repo)
+    git(repo, "pull", "-q", "--rebase", "origin", "main", check=False)
+    dest = repo / "trigger" / "tick.txt"
+    dest.parent.mkdir(exist_ok=True)
+    kind = "nightly" if a.nightly else "hourly"
+    dest.write_text(f"{kind} {datetime.now(timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ')}\n", encoding="utf-8")
+    git(repo, "add", "trigger/tick.txt")
+    push(repo, f"operations: {kind} tick")
+    print(f"✓ {kind} tick: the operations robot starts in about a minute")
 
 
 def main() -> None:
@@ -294,7 +319,11 @@ def main() -> None:
     d.add_argument("--repo", required=True)
     d.add_argument("csv")
     d.set_defaults(fn=cmd_directory)
-    for nm, fn in (("award", cmd_award), ("job-update", cmd_job_update)):
+    t = sub.add_parser("tick")
+    t.add_argument("--repo", required=True)
+    t.add_argument("--nightly", action="store_true")
+    t.set_defaults(fn=cmd_tick)
+    for nm, fn in (("award", cmd_award), ("job-update", cmd_job_update), ("job-load", cmd_job_load)):
         x = sub.add_parser(nm)
         x.add_argument("--repo", required=True)
         x.add_argument("json")

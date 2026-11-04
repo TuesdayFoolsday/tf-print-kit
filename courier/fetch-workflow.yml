@@ -1,0 +1,48 @@
+# Copy of .github/workflows/fetch.yml in the private courier repo (TuesdayFoolsday/tf-courier).
+# The courier repo carries its own copy of courier/box.py, receive.py and fetch.py (so it keeps working if the print kit goes private).
+# Courier fetch (System Blueprint §6a): exact copies of SharePoint files for a chat to edit.
+# A chat pushes fetch/<id>.tfc (print kit `send.py fetch`); courier/fetch.py downloads the file, seals it with the
+# chat's one-time key into pickup/<id>.tfc and writes results/fetch-<id>.json (no names). The chat collects it and
+# deletes the pickup; anything uncollected after 24 hours is deleted by the nightly pass.
+# Uses the courier secrets (TENANT_ID, CLIENT_ID, CLIENT_SECRET, COURIER_PRIVATE_KEY). GitHub emails the owner on failure.
+name: fetch
+on:
+  push:
+    branches: [main]
+    paths: ["fetch/**"]
+  schedule:
+    - cron: "45 9 * * *"   # nightly cleanup of uncollected pickups (3:45am CST / 4:45am CDT)
+  workflow_dispatch:
+concurrency:
+  group: fetch
+  cancel-in-progress: false
+permissions:
+  contents: write
+jobs:
+  fetch:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install -q cryptography requests
+      - id: run
+        run: python3 courier/fetch.py --repo . || echo "failed=1" >> "$GITHUB_OUTPUT"
+        env:
+          TENANT_ID: ${{ secrets.TENANT_ID }}
+          CLIENT_ID: ${{ secrets.CLIENT_ID }}
+          CLIENT_SECRET: ${{ secrets.CLIENT_SECRET }}
+          COURIER_PRIVATE_KEY: ${{ secrets.COURIER_PRIVATE_KEY }}
+      - name: record results, empty the request folder
+        run: |
+          git config user.name "TuesdayFoolsday"
+          git config user.email "TuesdayFoolsday@users.noreply.github.com"
+          git add -A fetch pickup results
+          git diff --cached --quiet && exit 0
+          git commit -q -m "fetched"
+          for i in 1 2 3 4; do git push -q && exit 0; sleep 5; git pull -q --rebase; done
+          exit 1
+      - if: steps.run.outputs.failed == '1'
+        run: echo "::error::A fetch failed — see results/fetch-*.json and the step above" && exit 1

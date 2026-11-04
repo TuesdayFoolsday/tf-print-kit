@@ -1,7 +1,7 @@
 """Compare one export's labor $/SF by unit type to history and print a short plain-text check.
 
     python3 metrics/bid_check.py <export.XML | compact.json> <cost_map.csv> <merged Bid Metrics.csv> [--project NAME] [--note TEXT]
-        [--status final|iteration|draft] [--pending-out DIR]     # scheduled runs (B7 / B16)
+        [--status final|iteration|draft] [--pending-out DIR]     # scheduled runs (B7 / B16); default draft
         [--append]                                               # chat only: rewrites the CSV given
 
 Labor $/SF (base wage actually priced, before burden and markup) is the judged metric: it is the only one
@@ -32,7 +32,7 @@ def main():
     ap.add_argument("export"); ap.add_argument("cost_map"); ap.add_argument("history")
     ap.add_argument("--project", default=""); ap.add_argument("--note", default="")
     ap.add_argument("--append", action="store_true")
-    ap.add_argument("--status", default="final", choices=["final", "iteration", "draft"])
+    ap.add_argument("--status", default="draft", choices=["final", "iteration", "draft"])  # final only at submission (System Rules C6, A15)
     ap.add_argument("--pending-out", default="")
     ap.add_argument("--by", default="")
     ap.add_argument("--units", default="", help="merged Bid Metrics Units.csv (history by material, size, grout)")

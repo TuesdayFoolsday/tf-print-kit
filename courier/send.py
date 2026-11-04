@@ -10,6 +10,7 @@ sealed and removed after delivery; results carry only sizes, fingerprints and it
     python3 courier/send.py send --repo /tmp/courier --drive <driveId> --folder <folderItemId> \
         [--replace] <local file>[=<SharePoint file name>] ...
     python3 courier/send.py wait --repo /tmp/courier <id> [--timeout 300]
+    python3 courier/send.py directory --repo /tmp/courier <contacts.csv>   # System Rules B3: new Directory contacts
 
 `send` prints the id and one line per file (index, bytes, sha256, name). `wait` exits 0 when every file was
 uploaded and verified, 1 on a failed delivery (reason printed), 2 if no result arrived within the timeout
@@ -107,6 +108,26 @@ def cmd_wait(a: argparse.Namespace) -> None:
         time.sleep(15)
 
 
+def cmd_directory(a: argparse.Namespace) -> None:
+    """Hand new contacts to the courier repo's `directory` Action (System Rules B3) by pushing trigger/directory_add.csv."""
+    import csv
+    src = Path(a.csv)
+    rows = list(csv.reader(src.read_text(encoding="utf-8-sig").splitlines()))
+    if len(rows) < 2 or "firm_id" not in rows[0] or "contact_name" not in rows[0]:
+        sys.exit("✗ not written: the CSV needs Directory.csv's header row (firm_id, contact_name, …) and at least one contact")
+    repo = Path(a.repo)
+    git(repo, "pull", "-q", "--rebase", "origin", "main", check=False)
+    dest = repo / "trigger" / "directory_add.csv"
+    dest.parent.mkdir(exist_ok=True)
+    dest.write_text(src.read_text(encoding="utf-8-sig"), encoding="utf-8")
+    git(repo, "add", "trigger/directory_add.csv")
+    if git(repo, "diff", "--cached", "--quiet", check=False).returncode == 0:
+        print("= same contacts as the last hand-off; nothing pushed")
+        return
+    push(repo, f"directory: {len(rows) - 1} contact(s)")
+    print(f"✓ {len(rows) - 1} contact(s) handed to the directory Action; result in results/directory-latest.json")
+
+
 def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     sub = ap.add_subparsers(dest="cmd", required=True)
@@ -123,6 +144,10 @@ def main() -> None:
     w.add_argument("id")
     w.add_argument("--timeout", type=int, default=300)
     w.set_defaults(fn=cmd_wait)
+    d = sub.add_parser("directory")
+    d.add_argument("--repo", required=True)
+    d.add_argument("csv")
+    d.set_defaults(fn=cmd_directory)
     a = ap.parse_args()
     a.fn(a)
 

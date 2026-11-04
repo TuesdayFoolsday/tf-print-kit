@@ -6,6 +6,9 @@ sealed manifest, upload it with Microsoft Graph (app-only token: TENANT_ID, CLIE
 holds Sites.Selected write on one site), download it back and compare the fingerprint again. Then write
 <repo>/results/<id>.json ({id, status ok|failed, finished, files[index, bytes, sha256, item_id, verified, error]},
 no file names) and delete the inbox file. Exit 1 if anything failed, so GitHub emails the owner.
+A file carrying `if_unchanged` (a SHA-256, from `send.py send --if-unchanged`) is uploaded only if the file now in
+SharePoint under that name still has exactly that fingerprint — so an edit of a fetched copy (fetch.py) never
+overwrites a change someone made in between.
 
     python3 courier/receive.py --repo .
 """
@@ -51,6 +54,15 @@ def deliver(payload: dict, tok: str) -> list[dict]:
             if len(data) != f["bytes"] or hashlib.sha256(data).hexdigest() != f["sha256"]:
                 raise RuntimeError("sealed copy doesn't match its own fingerprint")
             name = urllib.parse.quote(f["name"], safe="")
+            if f.get("if_unchanged"):  # send --if-unchanged: replace only the exact copy that was fetched
+                cur = requests.get(f"{GRAPH}/drives/{drive}/items/{f['folder_id']}:/{name}:/content",
+                                   headers=hdr, timeout=120)
+                if cur.status_code == 404:
+                    raise RuntimeError("not replaced: the file is no longer in that folder")
+                if cur.status_code != 200:
+                    raise RuntimeError(f"not replaced: couldn't read the current file ({cur.status_code})")
+                if hashlib.sha256(cur.content).hexdigest() != f["if_unchanged"]:
+                    raise RuntimeError("not replaced: the file in SharePoint changed since it was fetched — fetch it again")
             url = (f"{GRAPH}/drives/{drive}/items/{f['folder_id']}:/{name}:/content"
                    f"?@microsoft.graph.conflictBehavior={conflict}")
             r = requests.put(url, data=data, headers={**hdr, "Content-Type": "application/octet-stream"}, timeout=120)

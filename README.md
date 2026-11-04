@@ -54,3 +54,18 @@ The file is sealed (`courier/box.py`: X25519 + AES-GCM) into the private courier
 GitHub Action (`courier/workflow.yml`) runs `courier/receive.py`: opens it, uploads through Microsoft Graph,
 downloads it back, compares SHA-256, writes `results/<id>.json` (sizes, fingerprints, item ids — no names) and
 empties the inbox. Keys: `send.py keygen` (private key → the repo secret COURIER_PRIVATE_KEY).
+
+**Fetch (exact copies out of SharePoint, for editing in chat):**
+
+    python3 courier/send.py fetch --repo <courier clone> --drive <driveId> --item <itemId> --out <local file>
+    python3 courier/send.py fetch --repo <courier clone> --drive <driveId> --path "_Knowledge/Run Notes.md" --out <local file>
+    python3 courier/send.py send --repo <courier clone> --drive <driveId> --folder <folderId> --replace \
+        --if-unchanged <sha256 from fetch> <local file>=<name>                     # send the edit back
+
+`fetch` makes a one-time key and pushes a sealed request to the courier repo's `fetch/`; its `fetch` Action
+(`courier/fetch-workflow.yml` → `courier/fetch.py`) downloads the file twice, checks both copies agree, seals it with
+the one-time key into `pickup/` and writes `results/fetch-<id>.json` (size, fingerprint, item id — no names).
+`fetch` opens it, checks the fingerprint, saves the exact bytes, deletes the pickup and throws the key away (so the
+sealed copy left in git history can't be opened by anyone), then prints the `send` command for the way back.
+`--if-unchanged` makes the courier refuse the replace if the file in SharePoint changed since the fetch. Uncollected
+pickups are deleted after 24 hours.

@@ -128,6 +128,40 @@ def cmd_directory(a: argparse.Namespace) -> None:
     print(f"✓ {len(rows) - 1} contact(s) handed to the directory Action; result in results/directory-latest.json")
 
 
+def _push_trigger(a: argparse.Namespace, name: str, required: tuple[str, ...], label: str) -> None:
+    """Validate a small JSON request and hand it to the courier repo's `operations` Action."""
+    src = Path(a.json)
+    try:
+        req = json.loads(src.read_text(encoding="utf-8"))
+    except (OSError, ValueError) as e:
+        sys.exit(f"✗ not written: {src} isn't readable JSON ({e})")
+    missing = [k for k in required if not req.get(k)]
+    if missing:
+        sys.exit(f"✗ not written: missing {', '.join(missing)}")
+    repo = Path(a.repo)
+    git(repo, "pull", "-q", "--rebase", "origin", "main", check=False)
+    dest = repo / "trigger" / name
+    dest.parent.mkdir(exist_ok=True)
+    dest.write_text(json.dumps(req, indent=1, ensure_ascii=False) + "\n", encoding="utf-8")
+    git(repo, "add", f"trigger/{name}")
+    if git(repo, "diff", "--cached", "--quiet", check=False).returncode == 0:
+        print(f"= same {label} as the last hand-off; nothing pushed")
+        return
+    push(repo, f"operations: {label} {req.get('bid_id', '')}")
+    result = name.replace("job_update", "update").replace(".json", "")
+    print(f"✓ {label} handed to the operations Action; result in results/operations-{result}-latest.json")
+
+
+def cmd_award(a: argparse.Namespace) -> None:
+    """Hand an award to the Operations robot (Award Handoff plan): pushes trigger/award.json."""
+    _push_trigger(a, "award.json", ("bid_id", "project"), "award")
+
+
+def cmd_job_update(a: argparse.Namespace) -> None:
+    """Hand David's answers for a Jobs row to the Operations robot: pushes trigger/job_update.json."""
+    _push_trigger(a, "job_update.json", ("bid_id", "set"), "job update")
+
+
 def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     sub = ap.add_subparsers(dest="cmd", required=True)
@@ -148,6 +182,11 @@ def main() -> None:
     d.add_argument("--repo", required=True)
     d.add_argument("csv")
     d.set_defaults(fn=cmd_directory)
+    for nm, fn in (("award", cmd_award), ("job-update", cmd_job_update)):
+        x = sub.add_parser(nm)
+        x.add_argument("--repo", required=True)
+        x.add_argument("json")
+        x.set_defaults(fn=fn)
     a = ap.parse_args()
     a.fn(a)
 

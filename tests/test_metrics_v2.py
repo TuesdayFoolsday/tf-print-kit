@@ -208,5 +208,45 @@ class BidCheck(unittest.TestCase):
         self.assertIn("wages +", out.stdout)
 
 
+class Backfill(unittest.TestCase):
+    def test_fills_v2_only_and_refuses_a_mismatch(self):
+        e = Env()
+        p = e.p
+        # an estimate as it sits in Bid Metrics today: the pre-v2 columns only
+        (p / "hist.csv").write_text(hist_header(e))
+        (p / "units.csv").write_text(",".join(U.UNITS_COLS[:23]) + "\n")
+        subprocess.run([sys.executable, str(KIT / "metrics/bid_check.py"), str(p / "x.json"), str(p / "map.csv"), str(p / "hist.csv"),
+                        "--units", str(p / "units.csv"), "--grout", "8:full;6:full", "--status", "final",
+                        "--pending-out", str(p / "pm"), "--units-pending-out", str(p / "pu")], capture_output=True, text=True, check=True)
+        with redirect_stdout(io.StringIO()):
+            for base, pend, out in (("hist.csv", "pm", "bm.csv"), ("units.csv", "pu", "u.csv")):
+                h, rows, _, _ = ml.merge(str(p / base), str(p / pend))
+                v2 = set(ml.V2_COLS[h[0]])
+                keep = [i for i, c in enumerate(h) if c not in v2]       # strip v2: the "before" state
+                ml.bl.write([h[i] for i in keep], [[r[i] for i in keep] for r in rows], str(p / out))
+        (p / "src.json").write_text(json.dumps({"tm-99001": {"file": str(p / "x.json")}}))
+        run = lambda *x: subprocess.run([sys.executable, str(KIT / "metrics/backfill_v2.py"), *x], capture_output=True, text=True)
+        out = run(str(p / "bm.csv"), str(p / "u.csv"), str(p / "map.csv"), str(p / "src.json"), "--out", str(p / "bf"), "--write")
+        self.assertEqual(out.returncode, 0, out.stdout + out.stderr)
+        with redirect_stdout(io.StringIO()):
+            hb, before, _, _ = ml.merge(str(p / "u.csv"), str(p / "empty"))
+            ha, after, _, _ = ml.merge(str(p / "u.csv"), str(p / "bf" / "Bid Metrics Units"))
+        B, A = {r[0]: dict(zip(hb, r)) for r in before}, {r[0]: dict(zip(ha, r)) for r in after}
+        self.assertEqual(set(B), set(A))
+        for k in B:
+            for c in hb:
+                if c not in ml.V2_COLS["unit_key"]:
+                    self.assertEqual(B[k][c], A[k][c], (k, c))
+        self.assertTrue(A["tm-99001|cmu_gray|8|full"]["labor_std_per_unit"])
+        # a stored price that no longer matches the source is refused, nothing written
+        rows = list(csv.reader(open(p / "bm.csv")))
+        i = rows[0].index("bid_price"); rows[1][i] = str(float(rows[1][i]) + 100)
+        csv.writer(open(p / "bm2.csv", "w", newline="")).writerows(rows)
+        out = run(str(p / "bm2.csv"), str(p / "u.csv"), str(p / "map.csv"), str(p / "src.json"), "--out", str(p / "bf2"), "--write")
+        self.assertEqual(out.returncode, 1)
+        self.assertIn("refused", out.stdout)
+        self.assertFalse((p / "bf2").exists())
+
+
 if __name__ == "__main__":
     unittest.main()

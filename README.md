@@ -27,6 +27,14 @@ Power Automate (Flow 3) passes all four to `dashboard/load_dashboard_data.ts` (O
 refuses a mix of nights, and loads the workbook's tables. The build recalculates a copy in LibreOffice, scans every formula and cross-checks the
 headline numbers before saying "Upload: yes".
 
+## Bid Metrics v2 backfill (existing estimates)
+
+    python3 metrics/backfill_v2.py "Merged Bid Metrics.csv" "Merged Units.csv" "Cost Map.csv" sources.json --out <dir> [--write]
+
+Rebuilds each listed estimate from its source file and writes pending changes for the v2 columns only, and only when the
+rebuild matches what is stored (bid price, labor by unit type, same Units rows, each within $2). Dry run without --write.
+Run it after the v2 code is merged (the merge must know the new columns). Tests: `python3 -m unittest discover tests`.
+
 ## Job cost history
 
     python3 jobcost/job_cost.py template <dir>          # blank intake files

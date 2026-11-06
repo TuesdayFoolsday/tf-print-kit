@@ -21,6 +21,8 @@ import json
 import os
 import sys
 import urllib.parse
+import xml.etree.ElementTree as ET
+import zipfile
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -41,6 +43,46 @@ def token() -> str:
     if r.status_code != 200:
         raise RuntimeError(f"sign-in failed ({r.status_code}): {r.text[:300]}")
     return r.json()["access_token"]
+
+
+OFFICE = (".xlsx", ".xlsm", ".docx", ".docm", ".pptx", ".pptm")
+# SharePoint stamps its own properties into Office files it stores (document-library columns): it rewrites
+# docProps/core.xml and adds customXml/*, docProps/custom.xml and [trash]/* parts, with the relationships and
+# content types that point at them. Those are the only differences a read-back may show.
+SP_ADDED = ("customXml/", "[trash]/", "docProps/custom.xml")
+SP_REWRITTEN = ("docProps/core.xml",)
+
+
+def _items(xml: bytes) -> set:
+    return {(el.tag, tuple(sorted(el.attrib.items()))) for el in ET.fromstring(xml)}
+
+
+def office_same(sent: bytes, back: bytes) -> str:
+    """'' when `back` is `sent` with only SharePoint's property stamps added, else what differs."""
+    import io
+    try:
+        a, b = zipfile.ZipFile(io.BytesIO(sent)), zipfile.ZipFile(io.BytesIO(back))
+    except zipfile.BadZipFile:
+        return "not an Office file"
+    an, bn = set(a.namelist()), set(b.namelist())
+    if an - bn:
+        return f"missing after upload: {sorted(an - bn)[:3]}"
+    extra = [n for n in bn - an if not n.startswith(SP_ADDED)]
+    if extra:
+        return f"unexpected parts added: {extra[:3]}"
+    for n in an:
+        x, y = a.read(n), b.read(n)
+        if x == y or n in SP_REWRITTEN:
+            continue
+        if n.endswith(".rels") or n == "[Content_Types].xml":  # SharePoint may only add entries here
+            try:
+                if _items(x) <= _items(y):
+                    continue
+            except ET.ParseError:
+                pass
+            return f"entries changed in {n}"
+        return f"content changed: {n}"
+    return ""
 
 
 def deliver(payload: dict, tok: str) -> list[dict]:
@@ -77,7 +119,11 @@ def deliver(payload: dict, tok: str) -> list[dict]:
                 raise RuntimeError(f"read-back failed ({back.status_code})")
             got = hashlib.sha256(back.content).hexdigest()
             if len(back.content) != f["bytes"] or got != f["sha256"]:
-                raise RuntimeError(f"read-back mismatch: {len(back.content)} bytes, sha256 {got}")
+                why = office_same(data, back.content) if f["name"].lower().endswith(OFFICE) else "not an Office file"
+                if why:
+                    raise RuntimeError(f"read-back mismatch: {len(back.content)} bytes, sha256 {got} ({why})")
+                row["note"] = "SharePoint added its file properties; every part of the file is unchanged"
+                row["stored_sha256"] = got  # what a later fetch / --if-unchanged will see
             row["verified"] = True
         except Exception as e:  # one bad file doesn't stop the others
             row["error"] = str(e)
@@ -92,6 +138,11 @@ def main() -> None:
     results.mkdir(exist_ok=True)
     failed, tok = False, None
     for sealed in sorted(inbox.glob("*.tfc")) if inbox.exists() else []:
+        done = results / f"{sealed.stem}.json"
+        if done.exists():  # already delivered by an earlier run (a run that started from an older snapshot)
+            sealed.unlink()
+            print(f"· {sealed.stem} already delivered — skipped")
+            continue
         res = {"id": sealed.stem, "status": "failed", "files": []}
         try:
             payload = json.loads(open_box(sealed.read_bytes(), os.environ["COURIER_PRIVATE_KEY"]))

@@ -14,7 +14,47 @@ CMU_FACTOR = 1.15
 UNITS_COLS = ["unit_key", "metrics_id", "project", "source", "estimate_status", "material", "size", "grout",
               "sf", "units", "unit_factor", "labor_base", "material_base", "mandays", "sell",
               "labor_per_unit", "labor_per_sf", "units_per_manday", "sf_per_manday", "material_per_unit",
-              "sell_per_unit", "split_basis", "notes"]
+              "sell_per_unit", "split_basis", "notes",
+              # v2 (System Rules v1.29): measured conditions and the labor split (sum of the four = labor_per_unit)
+              "grout_fill_pct", "rebar_lf_per_sf", "labor_lay", "labor_rebar", "labor_grout", "labor_clean",
+              # v2b (David, Nov 5 evening: compare on hours, so a wage bump can't skew it): whole-crew hours the row
+              # carries (Crew Page hours by labor share) and labor per unit re-priced at the standard wages
+              "hours", "hours_per_unit", "labor_std_per_unit"]
+V2_UNITS_COLS = UNITS_COLS[-9:]
+KINDS = ("lay", "rebar", "grout", "clean")
+
+# Blocks one 3,000-lb SpecMix grout sack (about 1 CY) fills solid, by nominal CMU width (Bid Metrics v2 plan).
+BLOCKS_PER_SACK = {"6": 134.0, "8": 101.0, "10": 81.0, "12": 66.0}
+# Expected fill for a grout label (cells grouted / all cells, vertical bars only; bond beams and jambs add more).
+LABEL_FILL = {"full": 100, "8oc": 100, "16oc": 50, "24oc": 33, "32oc": 25, "40oc": 20, "48oc": 17}
+FILL_GAP = 15     # label vs measured fill more than 15 points apart -> takeoff check
+
+
+def labor_kind(cls, text):
+    """Which part of unit labor a line is: grout crew, rebar, cleaning, or laying (everything else)."""
+    c, t = (cls or "").upper(), (text or "").lower()
+    if "clean" in t:
+        return "clean"
+    if c == "GRC" or re.search(r"\bgrout", t):
+        return "grout"
+    if c in ("REB", "RES") or re.search(r"rebar|#\d\b|#\d\s|positioner|epoxy dowel", t):
+        return "rebar"
+    return "lay"
+
+
+def capacity(size, units):
+    """Sacks needed to fill these blocks solid ('' when the size has no yield on file)."""
+    y = BLOCKS_PER_SACK.get(str(size))
+    return units / y if y else None
+
+
+def label_gap(grout, fill_pct):
+    """Points between the grout label's expected fill and the measured fill, or None."""
+    exp = LABEL_FILL.get(grout)
+    try:
+        return None if exp is None or fill_pct in ("", None) else float(fill_pct) - exp
+    except (TypeError, ValueError):
+        return None
 
 _SIZE = re.compile(r"(?<!['\d])(\d{1,2})\s*(?:\"|''|”|in\b|-in\b|inch)", re.I)
 
@@ -87,7 +127,7 @@ def parse_grout_spec(spec):
 
 
 def finish(rows, metrics_id, project, source, status, labor_factor, mat_factor, grout_spec=None, grout_found=None,
-           basis="", notes=""):
+           basis="", notes="", v2=None):
     """rows: {(material, size): dict(sf, labor, material, mandays, sell)} -> list of units-table dicts.
     grout_spec (David) splits a size into grout rows by share; grout_found (from takeoff labels) labels a whole size."""
     spec = parse_grout_spec(grout_spec) if isinstance(grout_spec, str) else (grout_spec or {})
@@ -104,6 +144,8 @@ def finish(rows, metrics_id, project, source, status, labor_factor, mat_factor, 
             parts = [("n/a", 1.0)]
         for grout, share in parts:
             sf, lab, matl, md = x["sf"] * share, x["labor"] * share, x["material"] * share, x["mandays"] * share
+            kinds = {k: x.get(f"labor_{k}") for k in KINDS}
+            have_split = all(v is not None for v in kinds.values())
             sell = x.get("sell", lab * labor_factor + matl * mat_factor) * share
             f = unit_factor(mat, size)
             units = sf * f
@@ -120,8 +162,57 @@ def finish(rows, metrics_id, project, source, status, labor_factor, mat_factor, 
                 "material_per_unit": round(matl / units, 2) if units else "",
                 "sell_per_unit": round(sell / units, 2) if units else "",
                 "split_basis": basis + (f"; grout share {share:.0%} (David)" if share < 1 else ""),
-                "notes": notes})
+                "notes": notes,
+                "grout_fill_pct": (round(100 * x["grout_sacks"] / x["grout_cap"]) if x.get("grout_cap") else "")
+                                  if mat.startswith("cmu") and "grout_sacks" in x else "",
+                "rebar_lf_per_sf": round(x["rebar_lf"] / x["sf"], 2) if "rebar_lf" in x and x["sf"] and mat.startswith("cmu") else "",
+                **{f"labor_{k}": (round(kinds[k] * share / units, 2) if mat in ("cmu_gray", "cmu_arch", "brick") else
+                                  round(kinds[k] * share / sf, 2)) if have_split and (units if mat in ("cmu_gray", "cmu_arch", "brick") else sf) else ""
+                   for k in KINDS}})
+            o = out[-1]
+            if have_split and o["labor_lay"] != "" and (o["labor_per_unit"] != "" or o["labor_per_sf"] != ""):
+                tot = o["labor_per_unit"] if mat in ("cmu_gray", "cmu_arch", "brick") else o["labor_per_sf"]
+                o["labor_lay"] = round(tot - o["labor_rebar"] - o["labor_grout"] - o["labor_clean"], 2)  # parts sum exactly
+            o.update(hours_fields(mat, units, sf, lab, v2))
     return out
+
+
+def hours_fields(mat, units, sf, lab, v2):
+    """hours, hours_per_unit, labor_std_per_unit for one row. v2 = {hours_per_labor, std_ratio} from the estimate's
+    crew (bid_metrics.v2_factors); blank when the estimate carries no crew hours."""
+    per = units if mat in ("cmu_gray", "cmu_arch", "brick") else sf
+    f = {"hours": "", "hours_per_unit": "", "labor_std_per_unit": ""}
+    v2 = v2 or {}
+    if per and v2.get("hours_per_labor"):
+        h = lab * v2["hours_per_labor"]
+        f["hours"], f["hours_per_unit"] = round(h, 1), round(h / per, 3)
+    if per and v2.get("std_ratio"):
+        f["labor_std_per_unit"] = round(lab * v2["std_ratio"] / per, 2)
+    return f
+
+
+def metric_std(row):
+    """The judged number at the standard wages: labor_std_per_unit, else the priced figure (rows written before the
+    standard-wage column, almost all priced at the standard wages anyway)."""
+    try:
+        return float(row.get("labor_std_per_unit"))
+    except (TypeError, ValueError):
+        return metric(row)
+
+
+def lay_metric(row, kind="lay"):
+    """One part of the judged number (labor_lay / labor_grout / ...) as a float, or None."""
+    try:
+        return float(row.get(f"labor_{kind}"))
+    except (TypeError, ValueError):
+        return None
+
+
+def fill(row):
+    try:
+        return float(row.get("grout_fill_pct"))
+    except (TypeError, ValueError):
+        return None
 
 
 def metric(row):

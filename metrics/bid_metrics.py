@@ -19,7 +19,16 @@ OTHER = ["insulation", "scaffold", "other_items"]
 
 
 def sheets(path):
-    root = ET.parse(path).getroot()
+    try:
+        root = ET.parse(path).getroot()
+    except ET.ParseError:
+        # Some exports carry a stray Windows-1252 byte in free-text notes ("Hotel – Waco"); the numbers are
+        # unaffected, so read those bytes as cp1252 and parse the text.
+        raw = open(path, "rb").read()
+        text = "".join(ch if not 0xDC80 <= ord(ch) <= 0xDCFF else bytes([ord(ch) - 0xDC00]).decode("cp1252", "replace")
+                       for ch in raw.decode("utf-8", errors="surrogateescape"))
+        text = re.sub(r"^<\?xml[^>]*\?>", "", text.lstrip("\ufeff"))
+        root = ET.fromstring(text)
     out = {}
     for ws in root.findall(f"{{{SS}}}Worksheet"):
         rows = []
@@ -173,10 +182,76 @@ def load(path):
     return material_rows(wb), grand_totals(wb)
 
 
+KINDS = U.KINDS
+POOL_OVER = 1.15     # one size's own grout lines filling it more than 115% means the lines serve other sizes too
+
+
+def qty_of(r):
+    return r["qty"] or r["amount"]
+
+
+def cmu_quantities(lines, keys):
+    """Grout sacks, full-grout capacity and rebar LF onto CMU rows (Bid Metrics v2).
+
+    lines: grout + rebar rows of one scope (the job, or one wall); keys: {(unit type, size, ...): sf} for CMU.
+    A line labeled with a size ('3000# GROUT 8\" CMU') stays with that size, unless that size alone would read
+    over 115% full: then the job's grout and rebar are pooled across every CMU size (GP City Hall: one 8" grout
+    line served 8" and 6"). Unlabeled lines are always pooled. Grout spreads by capacity (so pooled sizes read the
+    same fill), rebar by SF. Returns ({key: dict(grout_sacks, grout_cap, rebar_lf)}, pooled?)."""
+    out = {k: dict(grout_sacks=0.0, grout_cap=0.0, rebar_lf=0.0) for k in keys}
+    cap = {k: (U.capacity(k[1], sf * U.CMU_FACTOR) or 0.0) for k, sf in keys.items()}
+    for k in keys:
+        out[k]["grout_cap"] = cap[k]
+    if not keys:
+        return out, False
+    sizes = {k[1] for k in keys}
+    lab = lambda r: U.cmu_size(f'{r["desc"]} {r["id"]}')
+    unit = lambda r: str(r.get("qty_units") or r.get("units") or "").lower().replace(".", "").strip()
+    # only volume lines count as grout (CY / sacks / bags): not mixers (days) or deliveries (each)
+    grout = [r for r in lines if U.labor_kind(r["cls"], f'{r["id"]} {r["desc"]}') == "grout" and "clean" not in r["desc"].lower()
+             and re.match(r"(cy|cbc|cubic|yd|sack|bag)", unit(r))]
+    # only rebar measured in feet (India prices rebar in TONS without a bar size: LF/SF stays blank)
+    rebar = [r for r in lines if U.labor_kind(r["cls"], f'{r["id"]} {r["desc"]}') == "rebar" and r["cls"] != "RES"
+             and re.match(r"(lin|lf)", unit(r))]
+    for k in keys:
+        if not grout:
+            out[k].pop("grout_sacks"); out[k].pop("grout_cap")
+        if not rebar:
+            out[k].pop("rebar_lf")
+    pooled = False
+    for s in sizes:
+        own = sum(qty_of(r) for r in grout if lab(r) == s)
+        c = sum(cap[k] for k in keys if k[1] == s)
+        if own and (not c or own / c > POOL_OVER):
+            pooled = True
+
+    def put(items, field, weight, targets):
+        tot = sum(weight[k] for k in targets)
+        if not tot or not items:
+            return
+        q = sum(qty_of(r) for r in items)
+        for k in targets:
+            out[k][field] += q * weight[k] / tot
+
+    allk, sfw = list(keys), dict(keys)
+    if pooled:
+        put(grout, "grout_sacks", cap, allk); put(rebar, "rebar_lf", sfw, allk)
+    else:
+        for items, field, w in ((grout, "grout_sacks", cap), (rebar, "rebar_lf", sfw)):
+            loose = [r for r in items if lab(r) not in sizes]
+            put(loose, field, w, allk)
+            for s in sizes:
+                put([r for r in items if lab(r) == s], field, w, [k for k in keys if k[1] == s])
+    return out, pooled
+
+
 def compute(path, map_path, project="", bid_id="", wall_grout=None):
     rules = load_map(map_path)
     rows, g = load(path)
-    B = {b: dict(sf=0.0, pieces=0.0, labor=0.0, material=0.0, mandays=0.0) for b in UNIT_TYPES + OTHER}
+    B = {b: dict(sf=0.0, pieces=0.0, labor=0.0, material=0.0, mandays=0.0, **{f"labor_{k}": 0.0 for k in KINDS})
+         for b in UNIT_TYPES + OTHER}
+    for r in rows:
+        r["kind"] = U.labor_kind(r["cls"], f'{r["id"]} {r["desc"]}')
     D = {b: {} for b in UNIT_TYPES}      # direct line items per unit type and size (Bid Metrics Units)
     support = {"cmu": [], "veneer": [], "colored_mortar": [], "all": []}
     for r in rows:
@@ -187,11 +262,13 @@ def compute(path, map_path, project="", bid_id="", wall_grout=None):
                 x["sf"] += r["amount"]
                 x["pieces"] += r["qty"] if r["qty_units"].lower().startswith("piece") else 0
                 sz = U.size_of(b, f'{r["id"]} {r["desc"]}')
-                d = D[b].setdefault(sz, dict(sf=0.0, labor=0.0, material=0.0, mandays=0.0))
+                d = D[b].setdefault(sz, dict(sf=0.0, labor=0.0, material=0.0, mandays=0.0, **{f"labor_{k}": 0.0 for k in KINDS}))
                 d["sf"] += r["amount"]; d["labor"] += r["labor"]; d["material"] += r["material"]; d["mandays"] += r["mandays"]
+                d[f'labor_{r["kind"]}'] += r["labor"]
             elif b == "insulation":
                 x["sf"] += r["amount"]
             x["labor"] += r["labor"]; x["material"] += r["material"]; x["mandays"] += r["mandays"]
+            x[f'labor_{r["kind"]}'] += r["labor"]
         else:  # support:<target>
             support.setdefault(b.split(":", 1)[1], []).append(r)
 
@@ -205,6 +282,7 @@ def compute(path, map_path, project="", bid_id="", wall_grout=None):
                 B[t]["labor"] += r["labor"] * w / tot
                 B[t]["material"] += r["material"] * w / tot
                 B[t]["mandays"] += r["mandays"] * w / tot
+                B[t][f'labor_{r["kind"]}'] += r["labor"] * w / tot
 
     spread(support.get("cmu", []), ["cmu_gray", "cmu_arch"])
     spread(support.get("veneer", []), ["brick", "stone", "cast_stone"])
@@ -293,7 +371,7 @@ def compute(path, map_path, project="", bid_id="", wall_grout=None):
     # the type (grout, rebar, joint reinforcement, flashing...) follows each size's SF share.
     raw = {}
     for b in UNIT_TYPES:
-        dsum = {k: sum(d[k] for d in D[b].values()) for k in ("labor", "material", "mandays")}
+        dsum = {k: sum(d[k] for d in D[b].values()) for k in ("labor", "material", "mandays") + tuple(f"labor_{k}" for k in KINDS)}
         sup = {k: B[b][k] - dsum[k] for k in dsum}
         sft = sum(d["sf"] for d in D[b].values())
         for sz, d in D[b].items():
@@ -301,7 +379,12 @@ def compute(path, map_path, project="", bid_id="", wall_grout=None):
             lab = (d["labor"] + sup["labor"] * sh)
             mat = d["material"] + sup["material"] * sh
             raw[(b, sz)] = dict(sf=d["sf"], labor=lab * crew_ratio, material=mat, mandays=d["mandays"] + sup["mandays"] * sh,
-                                sell=lab * labor_factor + mat * mat_factor)
+                                sell=lab * labor_factor + mat * mat_factor,
+                                **{f"labor_{k}": (d[f"labor_{k}"] + sup[f"labor_{k}"] * sh) * crew_ratio for k in KINDS})
+    q, pooled = cmu_quantities(rows, {k: v["sf"] for k, v in raw.items() if k[0].startswith("cmu") and v["sf"] > 0})
+    for k, v in q.items():
+        raw[k].update(v)
+    qnote = "grout + rebar pooled across CMU sizes" if pooled else ""
     walls = sorted({r.get("wall", "") for r in rows} - {""})
     if walls:
         # By-wall export: each wall's support lines (grout, rebar, ...) stay on that wall's own units, and the
@@ -315,8 +398,9 @@ def compute(path, map_path, project="", bid_id="", wall_grout=None):
                 b = bucket_for(rules, r["cls"], r["id"], r["desc"]) or "other_items"
                 if b in UNIT_TYPES:
                     sz = U.size_of(b, f'{r["id"]} {r["desc"]}')
-                    d = Dw.setdefault((b, sz), dict(sf=0.0, labor=0.0, material=0.0, mandays=0.0))
+                    d = Dw.setdefault((b, sz), dict(sf=0.0, labor=0.0, material=0.0, mandays=0.0, **{f"labor_{k}": 0.0 for k in KINDS}))
                     d["sf"] += r["amount"]; d["labor"] += r["labor"]; d["material"] += r["material"]; d["mandays"] += r["mandays"]
+                    d[f'labor_{r["kind"]}'] += r["labor"]
                 elif b.startswith("support:"):
                     sup.setdefault(b.split(":", 1)[1], []).append(r)
             fam = {"cmu": ["cmu_gray", "cmu_arch"], "veneer": ["brick", "stone", "cast_stone"], "all": UNIT_TYPES,
@@ -329,16 +413,43 @@ def compute(path, map_path, project="", bid_id="", wall_grout=None):
                     for k in keys:
                         f = Dw[k]["sf"] / tot
                         Dw[k]["labor"] += it["labor"] * f; Dw[k]["material"] += it["material"] * f; Dw[k]["mandays"] += it["mandays"] * f
-            g = wg.get(w.strip().lower(), "unknown")
+                        Dw[k][f'labor_{it["kind"]}'] += it["labor"] * f
+            wgr = wg.get(w.strip().lower(), "unknown")      # not 'g': that name holds the export's totals
+            qw, pw = cmu_quantities(wr, {k: d["sf"] for k, d in Dw.items() if k[0].startswith("cmu") and d["sf"] > 0})
+            pooled = pooled or pw
             for (b, sz), d in Dw.items():
-                key = (b, sz, g if b.startswith("cmu") else "n/a")
-                x = raw.setdefault(key, dict(sf=0.0, labor=0.0, material=0.0, mandays=0.0, sell=0.0))
+                key = (b, sz, wgr if b.startswith("cmu") else "n/a")
+                x = raw.setdefault(key, dict(sf=0.0, labor=0.0, material=0.0, mandays=0.0, sell=0.0,
+                                             **{f"labor_{k}": 0.0 for k in KINDS}))
                 x["sf"] += d["sf"]; x["labor"] += d["labor"] * crew_ratio; x["material"] += d["material"]
                 x["mandays"] += d["mandays"]; x["sell"] += d["labor"] * labor_factor + d["material"] * mat_factor
+                for k in KINDS:
+                    x[f"labor_{k}"] += d[f"labor_{k}"] * crew_ratio
+                for f_, v in qw.get((b, sz), {}).items():
+                    x[f_] = x.get(f_, 0.0) + v
         row["walls"] = len(walls)
+        qnote = "grout + rebar pooled across CMU sizes (some walls)" if pooled else ""
     row["_units_raw"] = raw
+    row["_qty_note"] = qnote
+    # Conditions measured from the export (Bid Metrics v2). The Wall Conditions file can fill or override these.
+    df = sum(r["qty"] or r["amount"] for r in rows if r["cls"].upper() == "DF")
+    row["openings_per_100sf"] = round(100 * df / row["wall_sf_total"], 2) if row["wall_sf_total"] and df else None
+    row["wages_bumped"] = ("y" if row["wages_vs_standard"] > 0.01 else "n") if row.get("wages_vs_standard") is not None else None
     row["_factors"] = (labor_factor / crew_ratio if crew_ratio else 0, mat_factor)
+    row["_v2"] = v2_factors(g.get("hours", {}), g.get("crew_base"))
+    row["labor_std_ratio"] = row["_v2"].get("std_ratio") or ""
     return row
+
+
+def v2_factors(hours, crew_base):
+    """From the Crew Page: whole-crew hours per $ of base labor, and standard-wage labor / priced labor.
+    Both come from the same hours, so a wage bump moves the dollars but not the hours (David, Nov 5 2026).
+    hours: {Bricklayer, Forman, Labor, Operator: hours}; crew_base: Crew Page base wages $. {} when either is missing."""
+    H = sum(v or 0 for v in (hours or {}).values())
+    if not H or not crew_base:
+        return {}
+    std = sum((hours.get(k) or 0) * STD_WAGES[k] for k in STD_WAGES)
+    return {"hours_per_labor": H / crew_base, "std_ratio": round(std / crew_base, 4) if std else None}
 
 
 if __name__ == "__main__":
@@ -351,7 +462,7 @@ if __name__ == "__main__":
     if a.compact:
         print(json.dumps(to_compact(a.export), separators=(",", ":"))); sys.exit()
     r = compute(a.export, a.cost_map, a.project, a.bid_id)
-    r.pop("_units_raw", None); r.pop("_factors", None); r.pop("walls", None)
+    r.pop("_units_raw", None); r.pop("_factors", None); r.pop("walls", None); r.pop("_qty_note", None); r.pop("_v2", None)
     if a.json:
         print(json.dumps(r, indent=1))
     else:

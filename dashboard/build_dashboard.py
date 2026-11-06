@@ -204,6 +204,9 @@ def prepare(a):
     if not units_all:
         warn.append("no Bid Metrics Units given — Labor by Size tab empty")
     units = [r for r in units_all if (r.get("estimate_status") or "final") == "final" and num(r.get("labor_per_unit"))]
+    # v2b: labor is judged at the standard wages (hours x the standard rates) so a wage bump can't skew the medians;
+    # rows from before that column use the priced figure (almost all were priced at the standard wages).
+    lab_std = lambda r: num(r.get("labor_std_per_unit")) or num(r.get("labor_per_unit"))
     proj_notes = {r["metrics_id"]: r.get("notes") or "" for r in bm_all if r.get("metrics_id")}
     mat_name = dict(UNIT_TYPES)
     per = lambda m: "block" if m.startswith("cmu") else "brick" if m == "brick" else "SF"
@@ -214,13 +217,20 @@ def prepare(a):
     sorder = lambda z: (int(z) if z.isdigit() else {"modular": 101, "king": 102, "norman": 103, "utility": 104}.get(z, 200))
     morder = {u: i for i, (u, _) in enumerate(UNIT_TYPES)}
     ucols = ["material", "size", "grout", "per", "project", "units", "labor_per_unit", "units_per_manday",
-             "material_per_unit", "sell_per_unit", "source", "notes"]
+             "material_per_unit", "sell_per_unit", "source", "notes",
+             # Bid Metrics v2 (System Rules v1.29): the labor split and measured grout / rebar
+             "labor_lay", "labor_rebar", "labor_grout", "labor_clean", "grout_fill_pct", "rebar_lf_per_sf",
+             # v2b: standard-wage labor and crew hours per unit
+             "labor_std_per_unit", "hours_per_unit"]
     urows = []
     for r in sorted(units, key=lambda r: (morder.get(r["material"], 99), sorder(r["size"]), gorder(r["grout"]), r["project"])):
         urows.append([mat_name.get(r["material"], r["material"]), size_lbl(r["material"], r["size"]), grout_lbl(r["grout"]),
                       per(r["material"]), r["project"], num(r["units"]), num(r["labor_per_unit"]), num(r["units_per_manday"]),
                       num(r["material_per_unit"]), num(r["sell_per_unit"]), r.get("source") or None,
-                      (r.get("notes") or proj_notes.get(r.get("metrics_id"), "")) or None])
+                      (r.get("notes") or proj_notes.get(r.get("metrics_id"), "")) or None]
+                     + [num(r.get(k)) if str(r.get(k) or "").strip() != "" else None
+                        for k in ("labor_lay", "labor_rebar", "labor_grout", "labor_clean", "grout_fill_pct", "rebar_lf_per_sf",
+                                  "labor_std_per_unit", "hours_per_unit")])
     T["tblUnits"] = (ucols, urows)
     groups_u = defaultdict(list)
     for r in units:
@@ -229,17 +239,41 @@ def prepare(a):
             groups_u[(r["material"], r["size"], "*")].append(r)
     med = lambda xs: round(statistics.median(xs), 2) if xs else None
     scols = ["material", "size", "grout", "per", "estimates", "median_labor", "low_labor", "low_job", "high_labor", "high_job",
-             "median_units_per_manday", "median_material", "median_sell"]
+             "median_units_per_manday", "median_material", "median_sell",
+             "median_lay", "low_lay", "high_lay", "lay_estimates", "median_grout_crew", "median_fill_pct"]
+    has = lambda r, k: str(r.get(k) or "").strip() != ""
+    v2 = lambda rs: [med([num(r["labor_lay"]) for r in rs if has(r, "labor_lay")]),
+                     min([num(r["labor_lay"]) for r in rs if has(r, "labor_lay")], default=None),
+                     max([num(r["labor_lay"]) for r in rs if has(r, "labor_lay")], default=None),
+                     sum(1 for r in rs if has(r, "labor_lay")),
+                     med([num(r["labor_grout"]) for r in rs if has(r, "labor_grout")]),
+                     med([num(r["grout_fill_pct"]) for r in rs if has(r, "grout_fill_pct")])]
     srows = []
     for (m, z, g), rs in sorted(groups_u.items(), key=lambda kv: (morder.get(kv[0][0], 99), sorder(kv[0][1]),
                                                                    -1 if kv[0][2] == "*" else gorder(kv[0][2]))):
-        lab = [(num(r["labor_per_unit"]), r["project"]) for r in rs]
+        lab = [(lab_std(r), r["project"]) for r in rs]
         lo, hi = min(lab), max(lab)
         srows.append([mat_name.get(m, m), size_lbl(m, z), "All grout" if g == "*" else grout_lbl(g), per(m), len(rs),
                       med([v for v, _ in lab]), lo[0], lo[1], hi[0], hi[1],
                       med([num(r["units_per_manday"]) for r in rs if num(r["units_per_manday"])]),
                       med([num(r["material_per_unit"]) for r in rs if num(r["material_per_unit"])]),
-                      med([num(r["sell_per_unit"]) for r in rs if num(r["sell_per_unit"])])])
+                      med([num(r["sell_per_unit"]) for r in rs if num(r["sell_per_unit"])])] + v2(rs))
+    # Labor by grout fill (Bid Metrics v2): 8" and 12" CMU in measured-fill bands, after the size's grout rows.
+    BANDS = [(0, 25), (25, 50), (50, 75), (75, 100)]
+    for m in ("cmu_gray", "cmu_arch"):
+        for z in ("8", "12"):
+            rs = [r for r in units if r["material"] == m and r["size"] == z and has(r, "grout_fill_pct")]
+            for lo_, hi_ in BANDS:
+                band = [r for r in rs if lo_ <= num(r["grout_fill_pct"]) < hi_ or (hi_ == 100 and num(r["grout_fill_pct"]) >= 100)]
+                if not band:
+                    continue
+                lab = [(lab_std(r), r["project"]) for r in band]
+                lo, hi = min(lab), max(lab)
+                srows.append([mat_name.get(m, m), size_lbl(m, z), f"Fill {lo_}–{hi_}%" + ("+" if hi_ == 100 else ""), per(m), len(band),
+                              med([v for v, _ in lab]), lo[0], lo[1], hi[0], hi[1],
+                              med([num(r["units_per_manday"]) for r in band if num(r["units_per_manday"])]),
+                              med([num(r["material_per_unit"]) for r in band if num(r["material_per_unit"])]),
+                              med([num(r["sell_per_unit"]) for r in band if num(r["sell_per_unit"])])] + v2(band))
     T["tblUnitStats"] = (scols, srows)
 
     # tblJobCost
@@ -374,17 +408,21 @@ def build(a, P):
     lf = {"bid_date": DATE, "bid_price": MONEY, "wages_vs_std": PCT}
     lf.update({f"{u}_{p}": f for u, _ in UNIT_TYPES for p, f in PER})
     add_table(sh["Labor History"], "tblLabor", *T["tblLabor"], fmts=lf, widths=[24, 8, 12, 11, 12, 8, 34, 9, 24] + [10] * 25)
-    uf = {k: RATE for k in ("median_labor", "low_labor", "high_labor", "median_material", "median_sell")}
-    uf.update(median_units_per_manday="#,##0.0", estimates=INT)
-    put(sh["Labor by Size"], "A1", "Labor per unit by material, size and grout — Crew Page base wage, final estimates only", font=F_SECTION)
+    uf = {k: RATE for k in ("median_labor", "low_labor", "high_labor", "median_material", "median_sell",
+                            "median_lay", "low_lay", "high_lay", "median_grout_crew")}
+    uf.update(median_units_per_manday="#,##0.0", estimates=INT, lay_estimates=INT, median_fill_pct='0"%"')
+    put(sh["Labor by Size"], "A1", "Labor per unit by material, size and grout — base wage at the standard rates, final estimates only", font=F_SECTION)
     put(sh["Labor by Size"], "A2", "Per = block (CMU SF x 1.15), brick (modular x 7, king x 5, Norman x 4.75, utility x 3.1) or SF (stone). "
-        "'All grout' pools every grout for that size. Each estimate behind a row: Units tab.", font=F_NOTE)
+        "Labor = lay + rebar + grout crew + cleaning (scaffold, door frames separate). 'All grout' pools every grout for that size; "
+        "lay columns = laying only, any grout. 'Fill' rows: 8\" and 12\" CMU by measured grout fill. Each estimate behind a row: Units tab.", font=F_NOTE)
     add_table(sh["Labor by Size"], "tblUnitStats", *T["tblUnitStats"], fmts=uf, start=4,
-              widths=[18, 9, 13, 7, 9, 12, 10, 34, 10, 34, 13, 12, 11])
+              widths=[18, 9, 13, 7, 9, 12, 10, 34, 10, 34, 13, 12, 11, 11, 10, 10, 9, 12, 11])
     sh["Labor by Size"].freeze_panes = "A5"
     add_table(sh["Units"], "tblUnits", *T["tblUnits"],
-              fmts={"units": INT, "labor_per_unit": RATE, "units_per_manday": "#,##0.0", "material_per_unit": RATE, "sell_per_unit": RATE},
-              widths=[18, 9, 13, 7, 40, 10, 12, 12, 12, 11, 10, 40])
+              fmts={"units": INT, "labor_per_unit": RATE, "units_per_manday": "#,##0.0", "material_per_unit": RATE, "sell_per_unit": RATE,
+                    "labor_lay": RATE, "labor_rebar": RATE, "labor_grout": RATE, "labor_clean": RATE, "grout_fill_pct": '0"%"',
+                    "rebar_lf_per_sf": "0.00", "labor_std_per_unit": RATE, "hours_per_unit": "0.000"},
+              widths=[18, 9, 13, 7, 40, 10, 12, 12, 12, 11, 10, 40, 10, 10, 10, 10, 9, 9, 12, 10])
     jf = {"through_date": DATE}
     jf.update({k: (PCT if k.endswith("var_pct") else RATE if k.endswith("per_sf") else "#,##0.0" if "manday" in k else MONEY)
                for k in T["tblJobCost"][0] if k.startswith(("est_", "act_", "mandays", "labor_var", "material_var"))})

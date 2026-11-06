@@ -29,7 +29,7 @@ import openpyxl
 from openpyxl.utils import column_index_from_string as col_ix
 
 sys.path.insert(0, os.path.dirname(__file__))
-from bid_metrics import STD_WAGES, UNIT_TYPES, OTHER, load_map
+from bid_metrics import STD_WAGES, UNIT_TYPES, OTHER, load_map, cmu_quantities
 import units as U
 
 SECTIONS = {"CMU MATERIALS", "BRICK MATERIALS", "MATERIAL CLEANING", "LABOR COST"}
@@ -217,7 +217,8 @@ def compute(path, map_path, tabs, project, metrics_id="", bid_id="", status="", 
     grout_found = {}
 
     def z(t, sz):
-        return Z.setdefault((t, sz), dict(sf=0.0, labor=0.0, material=0.0, mandays=0.0, sell=0.0))
+        return Z.setdefault((t, sz), dict(sf=0.0, labor=0.0, material=0.0, mandays=0.0, sell=0.0,
+                                          **{f"labor_{k}": 0.0 for k in U.KINDS}))
     for tab in tabs:
         T = read_tab(wbv, wbf, tab, rules, all_refs)
         tt = T["totals"]
@@ -282,6 +283,7 @@ def compute(path, map_path, tabs, project, metrics_id="", bid_id="", status="", 
         for (t, sz), d in zdays.items():
             w = d / dtot
             zz = z(t, sz); zz["labor"] += crew_base * w; zz["mandays"] += mason_days * w; zz["sell"] += crew_cost * mult * w
+            zz["labor_lay"] += crew_base * w     # India prices the crew as one lump, spread by lay-rate days: all lay
         extra["crew_cost"] += crew_cost
         lab_base_all += crew_base; lab_sell_all += crew_cost * mult
         # items
@@ -316,6 +318,7 @@ def compute(path, map_path, tabs, project, metrics_id="", bid_id="", status="", 
             if b in UNIT_TYPES:
                 for sz, w in zshare(b, r["name"]):
                     zz = z(b, sz); zz["labor"] += r["lab_base"] * w; zz["material"] += (r["mat_base"] + r["eq_base"]) * w
+                    zz[f'labor_{U.labor_kind("INDIA", r["name"])}'] += r["lab_base"] * w
                     zz["sell"] += cost * mult * w
             if b in UNIT_TYPES and str(r["unit"]).upper().startswith("EA") and b != "cast_stone":
                 x["pieces"] += r["qty"]
@@ -352,6 +355,7 @@ def compute(path, map_path, tabs, project, metrics_id="", bid_id="", status="", 
                         for sz, w2 in pairs:
                             zz = z(t, sz); f = scale * w2
                             zz["labor"] += r["lab_base"] * f; zz["material"] += (r["mat_base"] + r["eq_base"]) * f
+                            zz[f'labor_{U.labor_kind("INDIA", r["name"])}'] += r["lab_base"] * f
                             zz["sell"] += cost * mult * f
         for r in sum(support.values(), []):
             lab_base_all += r["lab_base"]; lab_sell_all += r["lab"] * mult
@@ -366,6 +370,17 @@ def compute(path, map_path, tabs, project, metrics_id="", bid_id="", status="", 
             if support.get(u):
                 tgt = next((t for t in FAMILY[u] if t in tab_types and B[t]["sf"] > 0), None)
                 spread(support[u], [tgt] if tgt else [])
+        # Bid Metrics v2: grout sacks / CY and rebar LF of this tab onto its CMU sizes (same rules as Tradesmen)
+        lines = [dict(cls="INDIA", id="", desc=r["name"], qty=r["qty"], amount=r["qty"], qty_units=str(r["unit"] or ""),
+                      units=str(r["unit"] or "")) for r in T["rows"] if r["bucket"] != "crew"
+                 and U.labor_kind("INDIA", r["name"]) in ("grout", "rebar")]
+        keys = {(t, sz): sf for t, d in tabsz.items() if t.startswith("cmu") for sz, sf in d.items() if sf > 0}
+        qv, pooled = cmu_quantities(lines, keys)
+        if pooled:
+            warn.append(f"{tab}: grout + rebar pooled across CMU sizes")
+        for k, v in qv.items():
+            for f_, x in v.items():
+                z(*k)[f_] = z(*k).get(f_, 0.0) + x
 
     price = extra["price"]
     row = {"metrics_id": metrics_id, "bid_id": bid_id, "project": project, "job_number": "", "source": "india",
@@ -423,6 +438,13 @@ def compute(path, map_path, tabs, project, metrics_id="", bid_id="", status="", 
     for k, col in (("Bricklayer", "bricklayer"), ("Forman", "foreman"), ("Labor", "laborer"), ("Operator", "operator")):
         row[f"crew_hours_{col}"] = round(hours[k], 1) if hours[k] else ""
     row["crew_hours"] = round(sum(hours.values()), 1)
+    # v2b: hours and the standard-wage ratio come from the crew (LABOR COST) lines. Item labor priced per unit
+    # (grout, rebar) carries no hours, so the ratio is measured on the crew and applied to the row's labor.
+    crew_paid = sum(hours[k] * max(wage_seen[k]) for k in hours if hours[k] and wage_seen.get(k))
+    std = sum(hours[k] * STD_WAGES[k] for k in STD_WAGES if hours.get(k))
+    H = sum(hours.values())
+    row["_v2"] = {"hours_per_labor": H / crew_paid, "std_ratio": round(std / crew_paid, 4)} if H and crew_paid else {}
+    row["labor_std_ratio"] = row["_v2"].get("std_ratio") or ""
     row["_units_raw"] = Z
     row["_grout_found"] = grout_found
     row["crew_cost"] = round(extra["crew_cost"])
@@ -439,7 +461,7 @@ if __name__ == "__main__":
     ap.add_argument("--notes", default=""); ap.add_argument("--json", action="store_true")
     a = ap.parse_args()
     r = compute(a.workbook, a.cost_map, a.tabs, a.project, a.metrics_id, a.bid_id, a.status, a.notes)
-    r.pop("_units_raw", None); r.pop("_grout_found", None)
+    r.pop("_units_raw", None); r.pop("_grout_found", None); r.pop("_v2", None)
     if a.json:
         print(json.dumps(r, indent=1, ensure_ascii=False))
     else:

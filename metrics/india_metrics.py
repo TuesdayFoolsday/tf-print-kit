@@ -219,6 +219,7 @@ def compute(path, map_path, tabs, project, metrics_id="", bid_id="", status="", 
     def z(t, sz):
         return Z.setdefault((t, sz), dict(sf=0.0, labor=0.0, material=0.0, mandays=0.0, sell=0.0,
                                           **{f"labor_{k}": 0.0 for k in U.KINDS}))
+    crew_paid_all = 0.0                     # v2b: crew base wages actually priced, summed over the tabs
     for tab in tabs:
         T = read_tab(wbv, wbf, tab, rules, all_refs)
         tt = T["totals"]
@@ -268,6 +269,7 @@ def compute(path, map_path, tabs, project, metrics_id="", bid_id="", status="", 
             warn.append(f"{tab}: no lay-rate rows — crew labor counted as other items")
             days_by, dtot = {"other_items": 1.0}, 1.0
         crew_base = sum(v[0] for v in T["crew"].values())
+        crew_paid_all += crew_base
         crew_cost = sum(r["lab"] for r in T["rows"] if r["bucket"] == "crew")
         mason_days = T["crew"]["Bricklayer"][0] / (T["crew"]["Bricklayer"][1] * 8) if T["crew"]["Bricklayer"][1] else 0
         for role, (base, wage) in T["crew"].items():
@@ -284,6 +286,7 @@ def compute(path, map_path, tabs, project, metrics_id="", bid_id="", status="", 
             w = d / dtot
             zz = z(t, sz); zz["labor"] += crew_base * w; zz["mandays"] += mason_days * w; zz["sell"] += crew_cost * mult * w
             zz["labor_lay"] += crew_base * w     # India prices the crew as one lump, spread by lay-rate days: all lay
+            zz["crew_labor"] = zz.get("crew_labor", 0.0) + crew_base * w   # v2b: only crew labor carries hours
         extra["crew_cost"] += crew_cost
         lab_base_all += crew_base; lab_sell_all += crew_cost * mult
         # items
@@ -440,7 +443,7 @@ def compute(path, map_path, tabs, project, metrics_id="", bid_id="", status="", 
     row["crew_hours"] = round(sum(hours.values()), 1)
     # v2b: hours and the standard-wage ratio come from the crew (LABOR COST) lines. Item labor priced per unit
     # (grout, rebar) carries no hours, so the ratio is measured on the crew and applied to the row's labor.
-    crew_paid = sum(hours[k] * max(wage_seen[k]) for k in hours if hours[k] and wage_seen.get(k))
+    crew_paid = crew_paid_all                # what the crew was paid, each tab at its own wages
     std = sum(hours[k] * STD_WAGES[k] for k in STD_WAGES if hours.get(k))
     H = sum(hours.values())
     row["_v2"] = {"hours_per_labor": H / crew_paid, "std_ratio": round(std / crew_paid, 4)} if H and crew_paid else {}

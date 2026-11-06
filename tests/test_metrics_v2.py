@@ -113,6 +113,24 @@ class StandardWages(unittest.TestCase):
         self.assertTrue(u["tm-99001|cmu_gray|8|full"]["hours"])
 
 
+class CrewOnly(unittest.TestCase):
+    """Review case: India rows mix crew labor (paid by the hour) and item labor priced per unit."""
+    def test_item_labor_carries_no_hours_and_is_not_repriced(self):
+        def row(wb, wl):                       # crew: 100 h bricklayer + 100 h laborer; $2,000 grout item labor
+            paid = 100 * wb + 100 * wl
+            v2 = {"hours_per_labor": 200 / paid, "std_ratio": (100 * 30 + 100 * 20) / paid}
+            return U.hours_fields("cmu_gray", 1000, 870, paid + 2000, v2, crew=paid)
+        base, bumped = row(30, 20), row(36, 24)
+        self.assertEqual(base["hours"], 200.0)
+        self.assertEqual(base["hours_per_unit"], bumped["hours_per_unit"])
+        self.assertEqual(base["labor_std_per_unit"], 7.0)
+        self.assertEqual(bumped["labor_std_per_unit"], 7.0)
+
+    def test_crew_none_means_all_labor(self):
+        f = U.hours_fields("cmu_gray", 100, 87, 700.0, {"hours_per_labor": 0.05, "std_ratio": 0.9})
+        self.assertEqual((f["hours"], f["labor_std_per_unit"]), (35.0, 6.3))
+
+
 class Split(unittest.TestCase):
     def test_parts_sum_exactly_to_labor_per_unit(self):
         _, u = Env().units()
@@ -153,6 +171,11 @@ class Conditions(unittest.TestCase):
     def test_absent_is_not_no(self):
         c = self._read("Grout full, 8 inch walls.\n")
         self.assertIsNone(c["chase_walls"])
+
+    def test_bad_field_value_keeps_the_text_value(self):
+        c = self._read("Access is tight. No chase walls.\n## Fields\n- access: sideways\n- chase_walls: none\n")
+        self.assertEqual(c["access"], "tight")
+        self.assertEqual(c["chase_walls"], "n")
 
     def test_bad_values_dropped(self):
         c = self._read("## Fields\n- difficulty: 9\n- access: sideways\n- travel: maybe\n")

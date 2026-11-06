@@ -173,21 +173,25 @@ def finish(rows, metrics_id, project, source, status, labor_factor, mat_factor, 
             if have_split and o["labor_lay"] != "" and (o["labor_per_unit"] != "" or o["labor_per_sf"] != ""):
                 tot = o["labor_per_unit"] if mat in ("cmu_gray", "cmu_arch", "brick") else o["labor_per_sf"]
                 o["labor_lay"] = round(tot - o["labor_rebar"] - o["labor_grout"] - o["labor_clean"], 2)  # parts sum exactly
-            o.update(hours_fields(mat, units, sf, lab, v2))
+            crew = x["crew_labor"] * share if "crew_labor" in x else None
+            o.update(hours_fields(mat, units, sf, lab, v2, crew))
     return out
 
 
-def hours_fields(mat, units, sf, lab, v2):
-    """hours, hours_per_unit, labor_std_per_unit for one row. v2 = {hours_per_labor, std_ratio} from the estimate's
-    crew (bid_metrics.v2_factors); blank when the estimate carries no crew hours."""
+def hours_fields(mat, units, sf, lab, v2, crew=None):
+    """hours, hours_per_unit, labor_std_per_unit for one row. v2 = {hours_per_labor, std_ratio} per $ of CREW labor
+    (bid_metrics.v2_factors); blank when the estimate carries no crew hours. crew = the part of the row's labor paid
+    by the hour (India: the crew lump; item labor priced per unit carries no hours and isn't re-priced). None = all
+    of it (Tradesmen: every labor dollar is Crew Page base wage)."""
+    crew = lab if crew is None else crew
     per = units if mat in ("cmu_gray", "cmu_arch", "brick") else sf
     f = {"hours": "", "hours_per_unit": "", "labor_std_per_unit": ""}
     v2 = v2 or {}
     if per and v2.get("hours_per_labor"):
-        h = lab * v2["hours_per_labor"]
+        h = crew * v2["hours_per_labor"]
         f["hours"], f["hours_per_unit"] = round(h, 1), round(h / per, 3)
     if per and v2.get("std_ratio"):
-        f["labor_std_per_unit"] = round(lab * v2["std_ratio"] / per, 2)
+        f["labor_std_per_unit"] = round((lab - crew + crew * v2["std_ratio"]) / per, 2)
     return f
 
 

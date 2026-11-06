@@ -73,11 +73,15 @@ def read(path):
                 elif k == "max_wall_height_ft":
                     out[k] = float(v)
                 elif k == "difficulty":
-                    out[k] = str(int(float(v))) if 1 <= float(v) <= 5 else None
+                    if 1 <= float(v) <= 5:
+                        out[k] = str(int(float(v)))
                 elif k in ("chase_walls", "secure_site", "travel", "prevailing_wage", "wages_bumped"):
-                    out[k] = {"y": "y", "yes": "y", "n": "n", "no": "n"}.get(v)
+                    yn = {"y": "y", "yes": "y", "true": "y", "n": "n", "no": "n", "none": "n", "false": "n"}.get(v)
+                    if yn:
+                        out[k] = yn
                 elif k == "access":
-                    out[k] = v if v in ACCESS else None
+                    if v in ACCESS:
+                        out[k] = v
                 elif k in out:
                     out[k] = v
             except ValueError:

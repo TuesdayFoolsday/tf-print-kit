@@ -118,10 +118,11 @@ class CrewOnly(unittest.TestCase):
     def test_item_labor_carries_no_hours_and_is_not_repriced(self):
         def row(wb, wl):                       # crew: 100 h bricklayer + 100 h laborer; $2,000 grout item labor
             paid = 100 * wb + 100 * wl
-            v2 = {"hours_per_labor": 200 / paid, "std_ratio": (100 * 30 + 100 * 20) / paid}
+            v2 = {"hours_per_labor": 200 / paid, "std_ratio": (100 * 30 + 100 * 20) / paid,
+                  "hours_per_std_dollar": 200 / (100 * 30 + 100 * 20)}
             return U.hours_fields("cmu_gray", 1000, 870, paid + 2000, v2, crew=paid)
         base, bumped = row(30, 20), row(36, 24)
-        self.assertEqual(base["hours"], 200.0)
+        self.assertEqual(base["hours"], 280.0)                       # 200 crew h + $2,000 at the $25/h standard blend
         self.assertEqual(base["hours_per_unit"], bumped["hours_per_unit"])
         self.assertEqual(base["labor_std_per_unit"], 7.0)
         self.assertEqual(bumped["labor_std_per_unit"], 7.0)

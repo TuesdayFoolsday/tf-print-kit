@@ -184,11 +184,14 @@ def hours_fields(mat, units, sf, lab, v2, crew=None):
     by the hour (India: the crew lump; item labor priced per unit carries no hours and isn't re-priced). None = all
     of it (Tradesmen: every labor dollar is Crew Page base wage)."""
     crew = lab if crew is None else crew
+    item = max(lab - crew, 0.0)              # labor priced per unit (per CY of grout, per ton of rebar)
     per = units if mat in ("cmu_gray", "cmu_arch", "brick") else sf
     f = {"hours": "", "hours_per_unit": "", "labor_std_per_unit": ""}
     v2 = v2 or {}
     if per and v2.get("hours_per_labor"):
-        h = crew * v2["hours_per_labor"]
+        # crew dollars -> hours at what the crew was paid; item dollars -> hours at the STANDARD crew rate, a fixed rule,
+        # so item hours count (like Tradesmen's Crew Page and Vista payroll) and never move with a wage bump
+        h = crew * v2["hours_per_labor"] + item * v2.get("hours_per_std_dollar", 0.0)
         f["hours"], f["hours_per_unit"] = round(h, 1), round(h / per, 3)
     if per and v2.get("std_ratio"):
         f["labor_std_per_unit"] = round((lab - crew + crew * v2["std_ratio"]) / per, 2)

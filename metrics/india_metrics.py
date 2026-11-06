@@ -446,7 +446,8 @@ def compute(path, map_path, tabs, project, metrics_id="", bid_id="", status="", 
     crew_paid = crew_paid_all                # what the crew was paid, each tab at its own wages
     std = sum(hours[k] * STD_WAGES[k] for k in STD_WAGES if hours.get(k))
     H = sum(hours.values())
-    row["_v2"] = {"hours_per_labor": H / crew_paid, "std_ratio": round(std / crew_paid, 4)} if H and crew_paid else {}
+    row["_v2"] = ({"hours_per_labor": H / crew_paid, "std_ratio": round(std / crew_paid, 4),
+                   "hours_per_std_dollar": H / std if std else 0.0} if H and crew_paid else {})
     row["labor_std_ratio"] = row["_v2"].get("std_ratio") or ""
     row["_units_raw"] = Z
     row["_grout_found"] = grout_found

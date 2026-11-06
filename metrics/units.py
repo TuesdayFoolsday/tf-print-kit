@@ -14,7 +14,44 @@ CMU_FACTOR = 1.15
 UNITS_COLS = ["unit_key", "metrics_id", "project", "source", "estimate_status", "material", "size", "grout",
               "sf", "units", "unit_factor", "labor_base", "material_base", "mandays", "sell",
               "labor_per_unit", "labor_per_sf", "units_per_manday", "sf_per_manday", "material_per_unit",
-              "sell_per_unit", "split_basis", "notes"]
+              "sell_per_unit", "split_basis", "notes",
+              # v2 (System Rules v1.29): measured conditions and the labor split (sum of the four = labor_per_unit)
+              "grout_fill_pct", "rebar_lf_per_sf", "labor_lay", "labor_rebar", "labor_grout", "labor_clean"]
+V2_UNITS_COLS = UNITS_COLS[-6:]
+KINDS = ("lay", "rebar", "grout", "clean")
+
+# Blocks one 3,000-lb SpecMix grout sack (about 1 CY) fills solid, by nominal CMU width (Bid Metrics v2 plan).
+BLOCKS_PER_SACK = {"6": 134.0, "8": 101.0, "10": 81.0, "12": 66.0}
+# Expected fill for a grout label (cells grouted / all cells, vertical bars only; bond beams and jambs add more).
+LABEL_FILL = {"full": 100, "8oc": 100, "16oc": 50, "24oc": 33, "32oc": 25, "40oc": 20, "48oc": 17}
+FILL_GAP = 15     # label vs measured fill more than 15 points apart -> takeoff check
+
+
+def labor_kind(cls, text):
+    """Which part of unit labor a line is: grout crew, rebar, cleaning, or laying (everything else)."""
+    c, t = (cls or "").upper(), (text or "").lower()
+    if "clean" in t:
+        return "clean"
+    if c == "GRC" or re.search(r"\bgrout", t):
+        return "grout"
+    if c in ("REB", "RES") or re.search(r"rebar|#\d\b|#\d\s|positioner|epoxy dowel", t):
+        return "rebar"
+    return "lay"
+
+
+def capacity(size, units):
+    """Sacks needed to fill these blocks solid ('' when the size has no yield on file)."""
+    y = BLOCKS_PER_SACK.get(str(size))
+    return units / y if y else None
+
+
+def label_gap(grout, fill_pct):
+    """Points between the grout label's expected fill and the measured fill, or None."""
+    exp = LABEL_FILL.get(grout)
+    try:
+        return None if exp is None or fill_pct in ("", None) else float(fill_pct) - exp
+    except (TypeError, ValueError):
+        return None
 
 _SIZE = re.compile(r"(?<!['\d])(\d{1,2})\s*(?:\"|''|”|in\b|-in\b|inch)", re.I)
 
@@ -104,6 +141,8 @@ def finish(rows, metrics_id, project, source, status, labor_factor, mat_factor, 
             parts = [("n/a", 1.0)]
         for grout, share in parts:
             sf, lab, matl, md = x["sf"] * share, x["labor"] * share, x["material"] * share, x["mandays"] * share
+            kinds = {k: x.get(f"labor_{k}") for k in KINDS}
+            have_split = all(v is not None for v in kinds.values())
             sell = x.get("sell", lab * labor_factor + matl * mat_factor) * share
             f = unit_factor(mat, size)
             units = sf * f
@@ -120,8 +159,29 @@ def finish(rows, metrics_id, project, source, status, labor_factor, mat_factor, 
                 "material_per_unit": round(matl / units, 2) if units else "",
                 "sell_per_unit": round(sell / units, 2) if units else "",
                 "split_basis": basis + (f"; grout share {share:.0%} (David)" if share < 1 else ""),
-                "notes": notes})
+                "notes": notes,
+                "grout_fill_pct": (round(100 * x["grout_sacks"] / x["grout_cap"]) if x.get("grout_cap") else "")
+                                  if mat.startswith("cmu") and "grout_sacks" in x else "",
+                "rebar_lf_per_sf": round(x["rebar_lf"] / x["sf"], 2) if "rebar_lf" in x and x["sf"] and mat.startswith("cmu") else "",
+                **{f"labor_{k}": (round(kinds[k] * share / units, 2) if mat in ("cmu_gray", "cmu_arch", "brick") else
+                                  round(kinds[k] * share / sf, 2)) if have_split and (units if mat in ("cmu_gray", "cmu_arch", "brick") else sf) else ""
+                   for k in KINDS}})
     return out
+
+
+def lay_metric(row, kind="lay"):
+    """One part of the judged number (labor_lay / labor_grout / ...) as a float, or None."""
+    try:
+        return float(row.get(f"labor_{kind}"))
+    except (TypeError, ValueError):
+        return None
+
+
+def fill(row):
+    try:
+        return float(row.get("grout_fill_pct"))
+    except (TypeError, ValueError):
+        return None
 
 
 def metric(row):

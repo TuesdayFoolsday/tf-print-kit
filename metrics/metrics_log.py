@@ -22,6 +22,20 @@ import bid_log as bl   # load / write / read_patches / now_ct
 KEY = "metrics_id"
 STATUSES = {"final", "iteration", "draft", ""}
 SOURCES = {"tradesmen", "india", ""}
+# Columns added by Bid Metrics v2 (System Rules v1.29). A base file written before v2 lacks them: merge adds them
+# (old rows read blank) and patches may set them.
+V2_COLS = {"metrics_id": ["max_wall_height_ft", "openings_per_100sf", "chase_walls", "access", "wages_bumped",
+                          "conditions_file"],
+           "unit_key": ["grout_fill_pct", "rebar_lf_per_sf", "labor_lay", "labor_rebar", "labor_grout", "labor_clean"]}
+
+
+def with_v2(header, rows=None):
+    """Header (and rows) extended with any missing v2 columns, blank."""
+    extra = [c for c in V2_COLS.get(header[0] if header else "", []) if c not in header]
+    if rows is not None:
+        for r in rows:
+            r.extend([""] * (len(header) + len(extra) - len(r)))
+    return header + extra
 
 
 def make_id(source, job_number="", project=""):
@@ -61,6 +75,7 @@ def merge(base_path, pdir):
     header, rows = bl.load(base_path)
     if not header or header[0] not in (KEY, "unit_key"):
         raise SystemExit(f"⚠ {base_path}: first column must be {KEY} or unit_key")
+    header = with_v2(header, rows)
     K = header[0]
     idx = {r[0]: i for i, r in enumerate(rows)}
     applied, warns = [], []
@@ -127,6 +142,7 @@ def cmd_merge(a):
 
 def cmd_patch(a):
     header, rows = bl.load(a.base)
+    header = with_v2(header, rows)
     p = json.load(open(a.json, encoding="utf-8")) if a.json else {}
     p.setdefault("set", {})
     for kv in a.set or []:

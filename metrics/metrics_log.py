@@ -25,8 +25,11 @@ SOURCES = {"tradesmen", "india", ""}
 # Columns added by Bid Metrics v2 (System Rules v1.29). A base file written before v2 lacks them: merge adds them
 # (old rows read blank) and patches may set them.
 V2_COLS = {"metrics_id": ["max_wall_height_ft", "openings_per_100sf", "chase_walls", "access", "wages_bumped",
-                          "conditions_file"],
-           "unit_key": ["grout_fill_pct", "rebar_lf_per_sf", "labor_lay", "labor_rebar", "labor_grout", "labor_clean"]}
+                          "conditions_file",
+                          # v2b (David, Nov 5 evening): standard-wage ratio, more conditions, the Vista job the bid became
+                          "labor_std_ratio", "secure_site", "travel", "prevailing_wage", "difficulty", "vista_job"],
+           "unit_key": ["grout_fill_pct", "rebar_lf_per_sf", "labor_lay", "labor_rebar", "labor_grout", "labor_clean",
+                        "hours", "hours_per_unit", "labor_std_per_unit"]}
 
 
 def with_v2(header, rows=None):

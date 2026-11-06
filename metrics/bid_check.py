@@ -6,7 +6,9 @@
 
 Labor per unit laid (System Rules v1.29): Crew Page base wage, before burden and markup, for laying + rebar +
 grout crew + cleaning; scaffold, door frames and other items are separate. Per block / brick, per SF for stone.
-It is the judged metric and the only one flagged. Three comparisons (Bid Metrics v2):
+It is the judged metric and the only one flagged, compared AT THE STANDARD WAGES (hours x $30/$65/$20/$27; David,
+Nov 5: a wage bump on a hard job shows as its own premium instead of moving the comparison; the priced figure prints
+beside it). Three comparisons (Bid Metrics v2):
   total labor per unit — same material + size + grout label, else same size (the line says which);
   lay labor           — same material + size, any grout (bigger sample);
   grout-crew labor    — same material + size, grout fill within ±15 points.
@@ -51,10 +53,11 @@ def main():
     a = ap.parse_args()
     wg = dict(x.split("=", 1) for x in (p.strip() for p in a.grout_walls.split(";")) if "=" in x)
     r = m.compute(a.export, a.cost_map, a.project, wall_grout={k.strip(): v.strip().lower() for k, v in wg.items()})
-    raw, (lf, mf) = r.pop("_units_raw"), r.pop("_factors")
+    raw, (lf, mf), v2 = r.pop("_units_raw"), r.pop("_factors"), r.pop("_v2", {})
     nwalls = r.pop("walls", 0)
     qnote = r.pop("_qty_note", "")
-    for k in ("max_wall_height_ft", "chase_walls", "access", "conditions_file"):
+    for k in ("max_wall_height_ft", "chase_walls", "access", "conditions_file", "secure_site", "travel",
+              "prevailing_wage", "difficulty"):
         r.setdefault(k, None)
     cond = C.read(a.conditions) if a.conditions else {}
     if cond:
@@ -78,18 +81,19 @@ def main():
     urows = U.finish(raw, r["metrics_id"], r["project"], "tradesmen", a.status, lf, mf, grout_spec=a.grout,
                      basis=("Tradesmen by wall (grout per wall, David)" if nwalls else "Tradesmen line items by size")
                            + (f"; {qnote}" if qnote else ""),
-                     notes=r["notes"])
+                     notes=r["notes"], v2=v2)
     uhist = []
     if a.units and os.path.exists(a.units):
         with open(a.units, newline="", encoding="utf-8") as f:
             uhist = [h for h in csv.DictReader(f) if h.get("metrics_id") != r["metrics_id"]
-                     and h.get("estimate_status", "final") == "final" and U.metric(h) is not None]
+                     and h.get("estimate_status", "final") == "final" and U.metric_std(h) is not None]
 
     out = [f"Bid Check — {r['project']} — ${r['bid_price']:,} — {r['wall_sf_total']:,.0f} wall SF — "
            f"OH {r['oh_pct']:.0%} / profit {r['profit_pct']:.0%}",
            "Labor per unit = base wage for lay + rebar + grout crew + cleaning (scaffold and door frames separate)."]
     if cond:
-        bits = [f"{k.replace('_', ' ')} {r[k]}" for k in ("max_wall_height_ft", "openings_per_100sf", "chase_walls", "access", "wages_bumped")
+        bits = [f"{k.replace('_', ' ')} {r[k]}" for k in ("max_wall_height_ft", "openings_per_100sf", "chase_walls", "access",
+                                                          "wages_bumped", "secure_site", "travel", "prevailing_wage", "difficulty")
                 if r.get(k) not in (None, "")]
         out.append("Wall Conditions read: " + (", ".join(bits) if bits else "nothing measurable") + ".")
     if r["reconciles"] != "y":
@@ -109,7 +113,7 @@ def main():
     proj = {h.get("metrics_id"): h for h in hist}
     tag = lambda h: h["project"] + (f" ({proj[h['metrics_id']]['notes']})" if proj.get(h["metrics_id"], {}).get("notes") else "")
     for u in urows:
-        v = U.metric(u)
+        v, priced = U.metric_std(u), U.metric(u)      # judged at the standard wages (v2b); priced shown beside it
         if v is None:
             continue
         per = "SF" if u["material"] in ("stone", "cast_stone") else ("block" if u["material"].startswith("cmu") else "brick")
@@ -124,8 +128,10 @@ def main():
         if len(past) < 3:
             past = [h for h in uhist if same(h, ("material", "size"))]
             basis = "same size, any grout" if u["material"].startswith("cmu") else "same size"
-        line = f"• {size}{label}{grout} — {u['units']:,} {per}s ({u['sf']:,.0f} SF) — labor ${v:,.2f}/{per}"
-        pv = [(U.metric(h), h) for h in past]
+        prem = (f" (priced ${priced:,.2f}: wages {priced / v - 1:+.0%})"
+                if priced and v and abs(priced / v - 1) > 0.01 else "")
+        line = f"• {size}{label}{grout} — {u['units']:,} {per}s ({u['sf']:,.0f} SF) — labor ${v:,.2f}/{per} at standard wages{prem}"
+        pv = [(U.metric_std(h), h) for h in past]
         if pv:
             lo, hi = min(pv, key=lambda t: t[0]), max(pv, key=lambda t: t[0])
             med = statistics.median(x for x, _ in pv)
@@ -156,7 +162,8 @@ def main():
                 if gap is not None and abs(gap) > U.FILL_GAP:
                     line += (f"\n   ⚠ takeoff check: grout label {u['grout']} expects ~{U.LABEL_FILL[u['grout']]}% fill, "
                              f"the takeoff's grout fills {fp:.0f}%")
-        out.append(line + f"\n   ref: {u['units_per_manday'] or '–'} {per}s/man-day · material ${u['material_per_unit'] or 0}/{per} · sell ${u['sell_per_unit'] or 0}/{per}")
+        out.append(line + f"\n   ref: {u['units_per_manday'] or '–'} {per}s/man-day · {u.get('hours_per_unit') or '–'} crew-hrs/{per}"
+                   f" · material ${u['material_per_unit'] or 0}/{per} · sell ${u['sell_per_unit'] or 0}/{per}")
     if not uhist:
         out.append("(no Bid Metrics Units history given — run with --units)")
     pcs = sum(float(u["units"] or 0) for u in urows if u["material"] in ("cmu_gray", "cmu_arch", "brick"))

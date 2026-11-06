@@ -414,11 +414,11 @@ def compute(path, map_path, project="", bid_id="", wall_grout=None):
                         f = Dw[k]["sf"] / tot
                         Dw[k]["labor"] += it["labor"] * f; Dw[k]["material"] += it["material"] * f; Dw[k]["mandays"] += it["mandays"] * f
                         Dw[k][f'labor_{it["kind"]}'] += it["labor"] * f
-            g = wg.get(w.strip().lower(), "unknown")
+            wgr = wg.get(w.strip().lower(), "unknown")      # not 'g': that name holds the export's totals
             qw, pw = cmu_quantities(wr, {k: d["sf"] for k, d in Dw.items() if k[0].startswith("cmu") and d["sf"] > 0})
             pooled = pooled or pw
             for (b, sz), d in Dw.items():
-                key = (b, sz, g if b.startswith("cmu") else "n/a")
+                key = (b, sz, wgr if b.startswith("cmu") else "n/a")
                 x = raw.setdefault(key, dict(sf=0.0, labor=0.0, material=0.0, mandays=0.0, sell=0.0,
                                              **{f"labor_{k}": 0.0 for k in KINDS}))
                 x["sf"] += d["sf"]; x["labor"] += d["labor"] * crew_ratio; x["material"] += d["material"]
@@ -436,7 +436,20 @@ def compute(path, map_path, project="", bid_id="", wall_grout=None):
     row["openings_per_100sf"] = round(100 * df / row["wall_sf_total"], 2) if row["wall_sf_total"] and df else None
     row["wages_bumped"] = ("y" if row["wages_vs_standard"] > 0.01 else "n") if row.get("wages_vs_standard") is not None else None
     row["_factors"] = (labor_factor / crew_ratio if crew_ratio else 0, mat_factor)
+    row["_v2"] = v2_factors(g.get("hours", {}), g.get("crew_base"))
+    row["labor_std_ratio"] = row["_v2"].get("std_ratio") or ""
     return row
+
+
+def v2_factors(hours, crew_base):
+    """From the Crew Page: whole-crew hours per $ of base labor, and standard-wage labor / priced labor.
+    Both come from the same hours, so a wage bump moves the dollars but not the hours (David, Nov 5 2026).
+    hours: {Bricklayer, Forman, Labor, Operator: hours}; crew_base: Crew Page base wages $. {} when either is missing."""
+    H = sum(v or 0 for v in (hours or {}).values())
+    if not H or not crew_base:
+        return {}
+    std = sum((hours.get(k) or 0) * STD_WAGES[k] for k in STD_WAGES)
+    return {"hours_per_labor": H / crew_base, "std_ratio": round(std / crew_base, 4) if std else None}
 
 
 if __name__ == "__main__":
@@ -449,7 +462,7 @@ if __name__ == "__main__":
     if a.compact:
         print(json.dumps(to_compact(a.export), separators=(",", ":"))); sys.exit()
     r = compute(a.export, a.cost_map, a.project, a.bid_id)
-    r.pop("_units_raw", None); r.pop("_factors", None); r.pop("walls", None); r.pop("_qty_note", None)
+    r.pop("_units_raw", None); r.pop("_factors", None); r.pop("walls", None); r.pop("_qty_note", None); r.pop("_v2", None)
     if a.json:
         print(json.dumps(r, indent=1))
     else:

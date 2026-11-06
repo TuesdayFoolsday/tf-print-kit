@@ -438,6 +438,13 @@ def compute(path, map_path, tabs, project, metrics_id="", bid_id="", status="", 
     for k, col in (("Bricklayer", "bricklayer"), ("Forman", "foreman"), ("Labor", "laborer"), ("Operator", "operator")):
         row[f"crew_hours_{col}"] = round(hours[k], 1) if hours[k] else ""
     row["crew_hours"] = round(sum(hours.values()), 1)
+    # v2b: hours and the standard-wage ratio come from the crew (LABOR COST) lines. Item labor priced per unit
+    # (grout, rebar) carries no hours, so the ratio is measured on the crew and applied to the row's labor.
+    crew_paid = sum(hours[k] * max(wage_seen[k]) for k in hours if hours[k] and wage_seen.get(k))
+    std = sum(hours[k] * STD_WAGES[k] for k in STD_WAGES if hours.get(k))
+    H = sum(hours.values())
+    row["_v2"] = {"hours_per_labor": H / crew_paid, "std_ratio": round(std / crew_paid, 4)} if H and crew_paid else {}
+    row["labor_std_ratio"] = row["_v2"].get("std_ratio") or ""
     row["_units_raw"] = Z
     row["_grout_found"] = grout_found
     row["crew_cost"] = round(extra["crew_cost"])
@@ -454,7 +461,7 @@ if __name__ == "__main__":
     ap.add_argument("--notes", default=""); ap.add_argument("--json", action="store_true")
     a = ap.parse_args()
     r = compute(a.workbook, a.cost_map, a.tabs, a.project, a.metrics_id, a.bid_id, a.status, a.notes)
-    r.pop("_units_raw", None); r.pop("_grout_found", None)
+    r.pop("_units_raw", None); r.pop("_grout_found", None); r.pop("_v2", None)
     if a.json:
         print(json.dumps(r, indent=1, ensure_ascii=False))
     else:

@@ -21,11 +21,12 @@ Input format and item vocabulary: docstring at the top of `pricebook/price_book.
     python3 dashboard/build_dashboard.py --bid-log "Bid Log 2026.csv" --bid-metrics "Bid Metrics 2026.csv" \
         --prices "Price Movers.csv" --job-cost "Job Cost History.csv" --out Dashboard.xlsx --data "Dashboard Data.txt" [--previous <dir>]
 
-`Dashboard.xlsx` (Excel tables + live formulas) is placed in SharePoint once. Each night the data goes up as four
-text parts, `Dashboard Data 1.txt` … `4.txt` (each ≤ 18 KB; unchanged parts are skipped with `--previous <dir>`);
-Power Automate (Flow 3) passes all four to `dashboard/load_dashboard_data.ts` (Office Script), which joins them,
+`Dashboard.xlsx` (Excel tables + live formulas) is placed in SharePoint once. Each night the data goes up as five
+text parts, `Dashboard Data 1.txt` … `5.txt` (each ≤ 18 KB; unchanged parts are skipped with `--previous <dir>`);
+Power Automate (Flow 3) passes all five (`part1` … `part5`) to `dashboard/load_dashboard_data.ts` (Office Script), which joins them,
 refuses a mix of nights, and loads the workbook's tables. The build recalculates a copy in LibreOffice, scans every formula and cross-checks the
-headline numbers before saying "Upload: yes".
+headline numbers before saying "Upload: yes". If the data ever outgrows the parts the build says "add a part": raise `PARTS` in `build_dashboard.py`, add `partN` to the Office Script, Flow 3 and the courier. Never drop a table or column.
+Flow 3 setup for the 5th part: see [dashboard/FLOW3.md](dashboard/FLOW3.md).
 
 ## Bid Metrics v2 backfill (existing estimates)
 

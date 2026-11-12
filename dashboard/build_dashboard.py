@@ -8,12 +8,12 @@ Two outputs:
 * Dashboard.xlsx — the workbook (tables tblBidLog, tblGCs, tblJobTypes, tblLabor, tblUnitStats, tblUnits, tblJobCost,
   tblMovers; every summary
   is a formula over those tables). Uploaded to SharePoint ONCE by hand; after that it is never replaced.
-* Dashboard Data 1.txt … Dashboard Data 4.txt — the rows for each table as JSON, split into PARTS parts of at most
+* Dashboard Data 1.txt … Dashboard Data 5.txt — the rows for each table as JSON, split into PARTS parts of at most
   PART_MAX bytes each (System Rules C2: a run never writes a file over 20 KB). A table too big for one part (tblBidLog)
   continues in the next part. Every part carries the same "set" hash, so the Office Script refuses a mix of nights;
   the stamp and About text ride in the last part. Unused parts are written empty (still valid). Runs upload the last part nightly
   and the other parts only when they changed (--previous DIR = the current parts copied from SharePoint).
-  A Power Automate flow (Flow 3) passes the four files to dashboard/load_dashboard_data.ts (an Office Script).
+  A Power Automate flow (Flow 3) passes the five files to dashboard/load_dashboard_data.ts (an Office Script).
 Formula columns inside tables (in_period, the GC and job-type stats) are kept by the script, never sent as data.
 
 Checks: LibreOffice recalculates a copy, every formula is scanned for errors, and hit rate and labor $/SF are
@@ -549,7 +549,9 @@ def build(a, P):
     wb.save(a.out)
 
 
-PARTS, PART_MAX = 4, 18_000
+# PARTS = how many part files are written every night (unused ones are valid empty parts, so Flow 3 never reads a
+# stale leftover). Raise it when the build says "add a part" — and add the part to the Office Script + Flow 3 + courier.
+PARTS, PART_MAX = 5, 18_000
 
 
 def _dump(obj):
@@ -583,6 +585,9 @@ def write_data(path, P):
                     problems.append(f"data needs more than {PARTS} parts of {PART_MAX // 1000} KB — add a part (script + Flow 3)")
                     return [], problems
                 parts[k]["tables"][name] = {"columns": t["columns"], "rows": [row]}
+                if size(parts[k]) > PART_MAX:   # a row that cannot fit even alone: never write an oversize file
+                    problems.append(f"{name}: one row is too big for a {PART_MAX // 1000} KB part even alone")
+                    return [], problems
     paths = part_paths(path)
     for d, pth in zip(parts, paths):
         with open(pth, "w", encoding="utf-8") as f:

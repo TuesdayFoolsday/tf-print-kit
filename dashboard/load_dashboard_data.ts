@@ -1,8 +1,8 @@
 /**
- * Office Script: load "Dashboard Data 1.txt" … "Dashboard Data 4.txt" (written nightly by build_dashboard.py) into the
+ * Office Script: load "Dashboard Data 1.txt" … "Dashboard Data 5.txt" (written nightly by build_dashboard.py) into the
  * Dashboard workbook.
  *
- * Power Automate (Flow 3) passes each file's content as part1 … part4. Each may arrive as the JSON text itself or
+ * Power Automate (Flow 3) passes each file's content as part1 … part5. Each may arrive as the JSON text itself or
  * wrapped as {"$content-type": "...", "$content": "<base64>"} — both are handled. A table split across parts is joined
  * in part order. All parts must carry the same "set" id (same night's build), or nothing is loaded.
  * (An old single-file "Dashboard Data.txt" passed as part1 with the others empty also works.)
@@ -30,8 +30,8 @@ interface Wrapped {
   "$content"?: string;
 }
 
-function main(workbook: ExcelScript.Workbook, part1: string, part2: string, part3: string, part4: string): string {
-  const parsed = joinParts([part1, part2, part3, part4]);
+function main(workbook: ExcelScript.Workbook, part1: string, part2: string, part3: string, part4: string, part5: string): string {
+  const parsed = joinParts([part1, part2, part3, part4, part5]);
   const summary: string[] = [];
 
   const names = Object.keys(parsed.tables);
@@ -110,7 +110,7 @@ function joinParts(inputs: string[]): DashboardData {
     }
   }
   if (parts.length === 0) {
-    throw new Error("No data — the Run script step's part1…part4 boxes are empty");
+    throw new Error("No data — the Run script step's part1…part5 boxes are empty");
   }
   if (parts.length === 1 && parts[0].part === undefined) {
     return parts[0];

@@ -96,7 +96,7 @@ def _parent(m: dict, drive: str, hdr: dict):
 
 
 def folder_allowed(drive: str, folder_id: str, hdr: dict) -> str:
-    """'' when uploads may go to this folder, else the reason. Fixed ids, or `02 Plans - Full` / `04 Addenda` directly
+    """'' when uploads may go to this folder, else the reason. Fixed ids, or a subfolder named in UPLOAD_JOB_SUBFOLDERS directly
     inside a job folder (root/<job> or root/<status folder>/<job>) of the one configured drive."""
     if folder_id in ALLOWED_FOLDERS:
         return ""

@@ -124,8 +124,10 @@ class Reader(unittest.TestCase):
         self.assertEqual(d["failures"], [])
         rows = {r["job"]: r for r in m.summarize(d)}
         self.assertGreater(len(rows), 10)
-        if "2530" in rows:   # Craig Manufacturing, B14 Nov 1: base-wage labor $8,128
-            self.assertEqual(rows["2530"]["act_labor_base"], 8128.0)
+        want = os.environ.get("JC_DETAIL_EXPECT", "")   # optional "job=base-wage labor", checked against a B14 result
+        if want:
+            job, amount = want.split("=")
+            self.assertEqual(rows[job]["act_labor_base"], float(amount))
 
 
 if __name__ == "__main__":

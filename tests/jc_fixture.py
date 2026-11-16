@@ -1,6 +1,6 @@
 """Write a small JC Detail .xls in the layout of the real Vista export (JCDetail.rpt saved as Excel, Nov 2026).
 
-Column positions copied from 'JC Detail4 2025 and 2026.xls' (Leadership › Job Cost): job / phase headers in column A,
+Column positions copied from a real multi-job export (Nov 2026): job / phase headers in column A,
 detail lines with Mth (A), Trans# (B), posted date (C), actual date (E), trans type (H), source (J), description (O),
 units (AF), hours (AI), cost (AK); subtotal lines with the label in P, hours in AH and cost in AK.
 Synthetic people and amounts; no real payroll data is committed.

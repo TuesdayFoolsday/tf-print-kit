@@ -51,7 +51,7 @@ SharePoint in chunks (resuming after errors through the session's nextExpectedRa
 token is sent, and they are never printed), then pushes a sealed `verify` request and prints one line per file (index,
 bytes, sha256, item id, ✓/✗). Exits 0 all verified, 1 any failed, 2 no result in time (finish with `upload-wait`).
 Nothing existing is overwritten: a name already in the folder fails that file. All pushes go to --branch (default main;
-the clone must have that branch checked out when it isn't main).
+the clone must have that branch checked out).
 """
 from __future__ import annotations
 
@@ -234,11 +234,11 @@ def cmd_fetch(a: argparse.Namespace) -> None:
 
 
 def _check_branch(repo: Path, branch: str) -> None:
-    """Pushes go to origin/<branch> from the clone's HEAD, so a non-main branch must be the one checked out."""
-    if branch != "main":
-        here = git(repo, "rev-parse", "--abbrev-ref", "HEAD", check=False).stdout.strip()
-        if here != branch:
-            sys.exit(f"✗ the clone has {here!r} checked out but --branch is {branch!r}; check out {branch} first")
+    """Pushes go to origin/<branch> from the clone's HEAD, so the clone must have that branch checked out (a detached
+    HEAD, as in an attached-repo run, is allowed for main). Stops a test-branch clone from pushing its commits to main."""
+    here = git(repo, "rev-parse", "--abbrev-ref", "HEAD", check=False).stdout.strip()
+    if here != branch and not (branch == "main" and here == "HEAD"):
+        sys.exit(f"✗ the clone has {here!r} checked out but --branch is {branch!r}; check out {branch} first")
 
 
 def _send_request(repo: Path, folder: str, cid: str, req: dict, branch: str, label: str) -> None:

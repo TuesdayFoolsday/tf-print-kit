@@ -308,8 +308,8 @@ def prepare(a):
 
     about = [f"Rebuilt {a.stamp} from Bid Log 2026.csv ({len(bl)} rows = {len(groups)} projects, {P_MULTI} bid to more than one GC), Bid Metrics 2026.csv ({len(bm)} final estimates of {len(bm_all)}; iterations and drafts left out), "
              f"Bid Metrics Units ({len(units)} final rows of {len(units_all)}), Job Cost History.csv ({len(jc)} rows), Price Movers.csv ({len(movers)} movers), Open Jobs.csv ({len(oj)} open jobs).",
-             "Open Jobs: Vista cost to date (weekly JC Detail, B14 buckets) vs the matched estimate. % complete = Vista billed ÷ contract "
-             "unless a PM % overrides it (or the pct_source switch says PM or laid); projected = cost to date ÷ % complete. 'over' = more "
+             "Open Jobs: Vista cost to date (weekly JC Detail, B14 buckets) vs the matched estimate. % complete = Vista billed to date "
+             "(JC Cost and Revenue) ÷ Vista contract (JC Contracts); laid % from the foreman daily reports is shown beside it; projected = cost to date ÷ % complete. 'over' = more "
              "than 10% over the estimate (projected once 15% complete, or already). 'no estimate entered' = no Bid Metrics row is linked "
              "to that Vista number.",
              "Labor by Size: labor per block (CMU SF x 1.15), per brick (modular x 7, king x 5, Norman x 4.75, utility x 3.1) or per SF (stone, cast stone), "

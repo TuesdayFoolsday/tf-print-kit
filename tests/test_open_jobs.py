@@ -10,6 +10,22 @@ sys.path.insert(0, str(ROOT / "jobcost"))
 import open_jobs as oj  # noqa: E402
 
 
+def contracts_xlsx(path, amounts):
+    """Vista 'JC Contracts - Detail' layout: job header in column A, then a row with Original:/Current: (cols V, AC)."""
+    import openpyxl
+    wb = openpyxl.Workbook(); ws = wb.active
+    r = 3
+    for job, amount in amounts.items():
+        ws.cell(r, 1, f" {job}-   Job {job}")
+        ws.cell(r + 2, 2, "Department:"); ws.cell(r + 2, 6, "1   Fenimore-Blythe Department")
+        ws.cell(r + 4, 2, "Interface Taxes:"); ws.cell(r + 4, 8, "N")
+        ws.cell(r + 4, 22, "Original:"); ws.cell(r + 4, 24, amount)
+        ws.cell(r + 4, 29, "Current:"); ws.cell(r + 4, 32, amount)
+        r += 8
+    wb.save(path)
+    return str(path)
+
+
 def write(path, cols, rows):
     with open(path, "w", newline="") as f:
         w = csv.DictWriter(f, fieldnames=cols); w.writeheader(); w.writerows(rows)
@@ -47,6 +63,8 @@ class OpenJobs(unittest.TestCase):
                  cmu_gray_material_base="2000")])
         self.billing = write(d / "bill.csv", ["vista_no", "total_cost", "billed"],
                              [dict(vista_no="2601", total_cost=70000, billed=100000), dict(vista_no="2602", total_cost=4000, billed=3000)])
+        # 2602 has 0 in Vista (as every job did on Nov 16); the Jobs list's ContractValue is never read.
+        self.contracts = contracts_xlsx(d / "c.xlsx", {"2601": 200000, "2602": 0, "2604": 5000})
         self.pm = write(d / "pm.csv", ["job", "pct_complete", "as_of", "by"], [dict(job="2602", pct_complete="40", as_of="2026-11-13", by="Jason")])
         self.laid = write(d / "laid.csv", ["job", "job_pct_complete"], [dict(job="2601", job_pct_complete="45.0")])
 
@@ -56,7 +74,7 @@ class OpenJobs(unittest.TestCase):
     def run_(self, *extra):
         out = self.d / "o.csv"
         oj.main(["--actuals", self.actuals, "--jobs", self.jobs, "--bid-metrics", self.bm, "--billing", self.billing,
-                 "--pm", self.pm, "--laid", self.laid, "--out", str(out), "--summary", str(self.d / "s.json"), *extra])
+                 "--contracts", self.contracts, "--pm", self.pm, "--laid", self.laid, "--out", str(out), "--summary", str(self.d / "s.json"), *extra])
         return {r["job"]: r for r in csv.DictReader(open(out))}
 
     def test_every_open_job_and_flags(self):
@@ -68,17 +86,35 @@ class OpenJobs(unittest.TestCase):
         self.assertIn("subtotals", r["2604"]["flag"])
         self.assertEqual(r["2604"]["proj_total"], "")                             # never compared
 
-    def test_billed_default_with_pm_override(self):
+    def test_billed_default_vista_contract_only(self):
         r = self.run_()
-        self.assertEqual(float(r["2601"]["pct_used"]), 0.5)                       # 100k billed / 200k contract
+        self.assertEqual(float(r["2601"]["pct_used"]), 0.5)                       # 100k billed / 200k Vista contract
         self.assertEqual(r["2601"]["pct_basis"], "billed / contract")
         self.assertEqual(float(r["2601"]["pct_laid"]), 0.45)
-        self.assertEqual(float(r["2602"]["pct_used"]), 0.4)
-        self.assertEqual(r["2602"]["pct_basis"], "PM % (override)")
-        self.assertIn("no contract amount", r["2602"]["notes"])
+        self.assertEqual(r["2602"]["pct_used"], "")                               # PM % no longer overrides billed
+        self.assertEqual(float(r["2602"]["pct_pm"]), 0.4)
+        self.assertIn("no contract amount in Vista", r["2602"]["notes"])
+        self.assertEqual(r["2604"]["contract"], "5000.0")
+
+    def test_jobs_list_contract_ignored(self):
+        oj.main(["--actuals", self.actuals, "--jobs", self.jobs, "--bid-metrics", self.bm, "--billing", self.billing,
+                 "--out", str(self.d / "o2.csv")])
+        r = {x["job"]: x for x in csv.DictReader(open(self.d / "o2.csv"))}
+        self.assertEqual(r["2601"]["pct_used"], "")                               # 200000 on the Jobs row, not used
+        self.assertEqual(r["2601"]["contract"], "")
+
+    def test_cost_and_revenue_cross_check(self):
+        rows = list(csv.DictReader(open(self.billing)))
+        rows[0]["total_cost"] = "65000"                                           # JC Detail says 70,000
+        write(self.d / "bill.csv", list(rows[0].keys()), rows)
+        r = self.run_()
+        self.assertIn("Vista reports disagree", r["2601"]["flag"])
+        self.assertEqual(r["2601"]["proj_total"], "")
+        self.assertNotIn("disagree", r["2602"]["flag"])
 
     def test_projection_and_over(self):
-        r = self.run_()
+        r = self.run_("--pct-source", "pm")
+        r["2601"] = self.run_()["2601"]
         b = r["2601"]   # 100 md at 50% -> 200 vs 200 est; labor 24k/0.5=48k vs 48k; material 30k/.5=60k vs 86.6k
         self.assertEqual(float(b["proj_mandays"]), 200.0)
         self.assertAlmostEqual(float(b["mandays_over_pct"]), 0.0)

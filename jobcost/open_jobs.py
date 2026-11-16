@@ -7,7 +7,7 @@
 
 Inputs
 * actuals — jobcost/jc_detail_multi.py output (weekly Vista JC Detail for every open job, System Rules B14 buckets).
-* jobs — the Operations Jobs list (VistaJobNo, Title, Status, EstimateID, ContractValue). Open = Status not "Closed out".
+* jobs — the Operations Jobs list (VistaJobNo, Title, Status, EstimateID). Open = Status not "Closed out".
   EVERY open job gets a row, with or without costs or an estimate.
 * bid-metrics — merged Bid Metrics (pending files folded in first, B16).
 * Estimate match, in this order, never by a guessed name:
@@ -16,11 +16,14 @@ Inputs
   (Job Cost History is keyed by the Tradesmen job number, not the Vista number, so it is not a match source.)
   Anything else -> flag "no estimate entered" (or "two estimates claim this job").
 * % complete (pct_used), the switch is --pct-source (settings: courier/dashboard_config.json "pct_source"):
-    billed (default, option B) — Vista billed to date / contract; a PM % in --pm for that job overrides it.
+    billed (default, option B; David 2026-11-16: every job) — Vista billed to date (JC Cost and Revenue, Billed
+                               Amount) / Vista current contract (JC Contracts - Detail). Nothing from the Jobs list.
     pm (option A)              — the PM's weekly % only; billed % shown for reference.
     laid                       — foreman daily reports: laid / estimated quantities (Job Progress - Jobs.csv).
-  Contract = Vista's current contract amount when it is above 0 (JC Contracts report), else the Jobs row's ContractValue.
-  Laid % is always shown in its own column.
+  A contract of 0 or missing in Vista -> no billed %, no projection, noted on the row.
+  Laid % is always shown in its own column (masonry jobs).
+* Cross-check (David 2026-11-16: JC Cost and Revenue replaces JC Cost By Job, Phase and Cost Type): each job's JC Detail
+  total must equal its JC Cost and Revenue Total Cost within $1; otherwise the row is flagged and not compared.
 * Projection = cost to date / pct_used, set against the estimate (labor man-days, base-wage labor $, material with tax,
   total). Not projected below 5% complete. "over" = projected (or already actual) more than THRESHOLD over the estimate
   once the job is at least MIN_PCT complete.
@@ -93,7 +96,9 @@ def read_contracts(path):
     out = {}
     if not path or not os.path.exists(path):
         return out
-    if path.lower().endswith(".xlsx"):
+    with open(path, "rb") as f:
+        is_xlsx = f.read(2) == b"PK"        # by content: the courier saves either kind under one local name
+    if is_xlsx:
         import openpyxl
         rows = openpyxl.load_workbook(path, read_only=True).worksheets[0].iter_rows(values_only=True)
     else:
@@ -177,18 +182,25 @@ def build(a):
             flags.append("Vista subtotals don't match — not compared")
         if act.get("notes"):
             notes.append(act["notes"])
-        contract = contracts.get(n) or num(j.get("ContractValue"))
-        billed = (billing.get(n) or (None, None))[1]
+        contract = contracts.get(n)
+        cr_total, billed = billing.get(n) or (None, None)
         pct_billed = round(billed / contract, 4) if billed is not None and contract else None
-        if billed is not None and not contract:
-            notes.append("no contract amount (Vista contract is 0 and the Jobs row has none) — billed % not computed")
+        if not contract:
+            notes.append("no contract amount in Vista (JC Contracts) — billed % not computed")
+        elif billed is None:
+            notes.append("not in JC Cost and Revenue — billed % not computed")
+        cross_ok = True
+        if act and billing and cr_total is None:
+            notes.append("not in JC Cost and Revenue — cost cross-check not done")
+        elif act and cr_total is not None and abs((num(act.get("act_total")) or 0) - cr_total) > 1:
+            cross_ok = False
+            flags.append(f"Vista reports disagree: JC Detail ${num(act.get('act_total')) or 0:,.2f} vs JC Cost and "
+                         f"Revenue ${cr_total:,.2f} (different dates?) — not compared")
         pct_pm, pct_laid = pm.get(n), (laid.get(n) / 100 if laid.get(n) is not None else None)
         if a.pct_source == "pm":
             pct, basis = pct_pm, "PM %"
         elif a.pct_source == "laid":
             pct, basis = pct_laid, "laid %"
-        elif pct_pm is not None:
-            pct, basis = pct_pm, "PM % (override)"
         else:
             pct, basis = pct_billed, "billed / contract"
         if pct is None:
@@ -204,7 +216,7 @@ def build(a):
         if no_hours and ((num(act.get("act_sub")) or 0) > 0 or "SL" in act.get("notes", "")):
             notes.append("no FB labor hours (labor subcontracted?) — man-days and labor $ not compared")
         worst = []
-        comparable = e and act and act.get("recon_ok") == "y"
+        comparable = e and act and act.get("recon_ok") == "y" and cross_ok
         for key, ek, ak in COMPARE:
             ev, av = row.get(ek), row.get(ak)
             if no_hours and key in ("mandays", "labor"):

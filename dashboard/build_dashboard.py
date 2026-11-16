@@ -2,11 +2,11 @@
 
     python3 dashboard/build_dashboard.py --bid-log "Bid Log 2026.csv" --bid-metrics "Bid Metrics 2026.csv" \
         [--units "Bid Metrics Units 2026.csv"] [--prices "Price Movers.csv"] [--job-cost "Job Cost History.csv"] \
-        [--out Dashboard.xlsx] [--data "Dashboard Data.txt"] [--previous DIR] [--no-recalc]
+        [--open-jobs "Open Jobs.csv"] [--out Dashboard.xlsx] [--data "Dashboard Data.txt"] [--previous DIR] [--no-recalc]
 
 Two outputs:
 * Dashboard.xlsx — the workbook (tables tblBidLog, tblGCs, tblJobTypes, tblLabor, tblUnitStats, tblUnits, tblJobCost,
-  tblMovers; every summary
+  tblMovers, tblOpenJobs; every summary
   is a formula over those tables). Uploaded to SharePoint ONCE by hand; after that it is never replaced.
 * Dashboard Data 1.txt … Dashboard Data 5.txt — the rows for each table as JSON, split into PARTS parts of at most
   PART_MAX bytes each (System Rules C2: a run never writes a file over 20 KB). A table too big for one part (tblBidLog)
@@ -56,6 +56,12 @@ FILL_INPUT = PatternFill("solid", fgColor="FFF2CC")
 THIN = Border(bottom=Side(style="thin", color="D1D5DB"))
 MONEY, RATE, PCT, INT, DATE = '$#,##0;($#,##0);"-"', '$#,##0.00;($#,##0.00);"-"', '0.0%;(0.0%);"-"', '#,##0;(#,##0);"-"', "yyyy-mm-dd"
 EPOCH = dt.date(1899, 12, 30)
+OPEN_COLS = ["job", "project", "status", "estimate_id", "match", "through_date", "flag",
+             "pct_used", "pct_basis", "pct_billed", "pct_pm", "pct_laid", "contract", "billed_to_date",
+             "est_mandays", "act_mandays", "proj_mandays", "mandays_over_pct",
+             "est_labor_base", "act_labor_base", "proj_labor_base", "labor_over_pct",
+             "est_material", "act_material", "proj_material", "material_over_pct",
+             "est_cost_total", "act_total", "proj_total", "total_over_pct", "notes"]
 
 
 # ---------- input ----------
@@ -121,6 +127,8 @@ def prepare(a):
     bm = [r for r in bm_all if (r.get("estimate_status") or "final") == "final"]
     movers = [p for p in read_csv(a.prices) if p.get("mover") == "y"] if a.prices and os.path.exists(a.prices) else []
     jc = read_csv(a.job_cost) if a.job_cost and os.path.exists(a.job_cost) else []
+    ojp = getattr(a, "open_jobs", "")
+    oj = read_csv(ojp) if ojp and os.path.exists(ojp) else []
     warn = []
     if not (a.prices and os.path.exists(a.prices)):
         warn.append("no Price Movers.csv given — movers section empty")
@@ -285,6 +293,12 @@ def prepare(a):
     T["tblJobCost"] = (jcols, [[serial(day(r.get(k))) if k == "through_date" else (r.get(k) or None) if k in text else num(r.get(k))
                                 for k in jcols] for r in jc])
 
+    # tblOpenJobs — open jobs: cost to date vs estimate, % complete, projection (jobcost/open_jobs.py; System Rules B19
+    # draft). Workbook only: never sent in the Dashboard Data parts (WORKBOOK_ONLY), so Flow 3 can't trip on it.
+    otext = {"job", "project", "status", "estimate_id", "match", "flag", "pct_basis", "notes"}
+    T["tblOpenJobs"] = (OPEN_COLS, [[serial(day(r.get(k))) if k == "through_date" else (r.get(k) or None) if k in otext
+                                     else num(r.get(k)) for k in OPEN_COLS] for r in oj])
+
     # tblMovers
     mcols = ["item", "change_pct", "unit_price", "prior_price", "unit", "product", "supplier", "quote_date", "prior_date", "project"]
     movers.sort(key=lambda p: -abs(num(p["change_pct"]) or 0))
@@ -293,7 +307,11 @@ def prepare(a):
                                 p["project"]] for p in movers])
 
     about = [f"Rebuilt {a.stamp} from Bid Log 2026.csv ({len(bl)} rows = {len(groups)} projects, {P_MULTI} bid to more than one GC), Bid Metrics 2026.csv ({len(bm)} final estimates of {len(bm_all)}; iterations and drafts left out), "
-             f"Bid Metrics Units ({len(units)} final rows of {len(units_all)}), Job Cost History.csv ({len(jc)} rows), Price Movers.csv ({len(movers)} movers).",
+             f"Bid Metrics Units ({len(units)} final rows of {len(units_all)}), Job Cost History.csv ({len(jc)} rows), Price Movers.csv ({len(movers)} movers), Open Jobs.csv ({len(oj)} open jobs).",
+             "Open Jobs: Vista cost to date (weekly JC Detail, B14 buckets) vs the matched estimate. % complete = Vista billed ÷ contract "
+             "unless a PM % overrides it (or the pct_source switch says PM or laid); projected = cost to date ÷ % complete. 'over' = more "
+             "than 10% over the estimate (projected once 15% complete, or already). 'no estimate entered' = no Bid Metrics row is linked "
+             "to that Vista number.",
              "Labor by Size: labor per block (CMU SF x 1.15), per brick (modular x 7, king x 5, Norman x 4.75, utility x 3.1) or per SF (stone, cast stone), "
              "Crew Page base wage, final estimates only; 'All grout' rows pool every grout for that material and size (the Bid Check's fallback).",
              "Hit rate (Dashboard, By Job Type) counts each PROJECT once: won if any GC awarded it to us, lost if decided against us, "
@@ -303,7 +321,7 @@ def prepare(a):
     about += [f"{d} ← " + " | ".join(raws) for d, raws in merges] or ["none"]
     about += ["", "⚠ items:"] + (warn or ["none"])
     P_proj = {k: pstatus[idx[0]] for k, idx in groups.items()}
-    return dict(T=T, bl=bl, bm=bm, units=units, warn=warn, about=about, proj=P_proj, stamp=f"Rebuilt {a.stamp}. Don't edit data tabs — they reload nightly.")
+    return dict(T=T, bl=bl, bm=bm, units=units, warn=warn, about=about, proj=P_proj, oj=oj, stamp=f"Rebuilt {a.stamp}. Don't edit data tabs — they reload nightly.")
 
 
 # ---------- workbook ----------
@@ -388,7 +406,7 @@ def build(a, P):
     T = P["T"]
     wb = Workbook()
     dash = wb.active; dash.title = "Dashboard"
-    sh = {n: wb.create_sheet(n) for n in ["By GC", "By Job Type", "Labor by Size", "Labor History", "Units", "Job Cost", "Movers", "Bid Log", "About"]}
+    sh = {n: wb.create_sheet(n) for n in ["By GC", "By Job Type", "Labor by Size", "Labor History", "Units", "Job Cost", "Open Jobs", "Movers", "Bid Log", "About"]}
     for nm, ref in (("Period", "Dashboard!$C$4"), ("PeriodFrom", "Dashboard!$C$5")):
         dn = DefinedName(nm, attr_text=ref)
         if hasattr(wb.defined_names, "add"):
@@ -427,6 +445,11 @@ def build(a, P):
     jf.update({k: (PCT if k.endswith("var_pct") else RATE if k.endswith("per_sf") else "#,##0.0" if "manday" in k else MONEY)
                for k in T["tblJobCost"][0] if k.startswith(("est_", "act_", "mandays", "labor_var", "material_var"))})
     add_table(sh["Job Cost"], "tblJobCost", *T["tblJobCost"], fmts=jf, widths=[10, 22, 10, 11, 8] + [11] * 15 + [30, 30])
+    of = {"through_date": DATE}
+    of.update({k: (PCT if k.startswith("pct_") or k.endswith("over_pct") else "#,##0.0" if "mandays" in k else MONEY)
+               for k in OPEN_COLS if k.startswith(("pct_", "est_", "act_", "proj_", "contract", "billed")) or k.endswith("over_pct")})
+    add_table(sh["Open Jobs"], "tblOpenJobs", *T["tblOpenJobs"], fmts=of,
+              widths=[7, 26, 8, 18, 16, 11, 24] + [9] * (len(OPEN_COLS) - 8) + [40])
     add_table(sh["Movers"], "tblMovers", *T["tblMovers"],
               fmts={"change_pct": PCT, "unit_price": RATE, "prior_price": RATE, "quote_date": DATE, "prior_date": DATE},
               widths=[18, 9, 11, 11, 6, 40, 28, 11, 11, 28])
@@ -538,6 +561,18 @@ def build(a, P):
     arr(ws, f"D{j0 + 2}", f'=IF(COUNTIFS({sc},"job",{st},"final",{lv},"<>")=0,"",MEDIAN(IF(({sc}="job")*({st}="final")*({lv}<>""),{lv})))', PCT)
     put(ws, f"A{j0 + 3}", "Positive = actual over estimate. Labor $ only where the accounting export is base wage; unit-type rows only "
         "for single-unit-type jobs or a manual split.", font=F_NOTE)
+    o0 = j0 + 5
+    put(ws, f"A{o0}", "Open jobs — cost to date vs estimate (Open Jobs tab)", font=F_SECTION)
+    head(ws, o0 + 1, 1, ["", "Jobs", "", "", "", "", "", "", "", ""])
+    fl = "tblOpenJobs[flag]"
+    for i, (label, f) in enumerate([("Open jobs", "=COUNTA(tblOpenJobs[job])"),
+                                    ("Running over (>10%)", f'=COUNTIF({fl},"over*")'),
+                                    ("No estimate entered", f'=COUNTIF({fl},"*no estimate entered*")+COUNTIF({fl},"*two estimates*")'),
+                                    ("With a % complete", "=COUNT(tblOpenJobs[pct_used])")], start=o0 + 2):
+        put(ws, f"A{i}", label, font=F_BOLD)
+        put(ws, f"B{i}", f, INT)
+    put(ws, f"A{o0 + 6}", "Weekly Vista JC Detail (Monday drop in _Drop Box). Jobs with no estimate: link the estimate "
+        "(Jobs row EstimateID) so they can be tracked.", font=F_NOTE)
     ws.freeze_panes = "A6"
 
     for s_ in (dash, sh["By GC"], sh["By Job Type"]):
@@ -552,6 +587,9 @@ def build(a, P):
 # PARTS = how many part files are written every night (unused ones are valid empty parts, so Flow 3 never reads a
 # stale leftover). Raise it when the build says "add a part" — and add the part to the Office Script + Flow 3 + courier.
 PARTS, PART_MAX = 5, 18_000
+# Tables that live only in the workbook (uploaded whole since v1.36) and are never sent in the data parts: the
+# Office Script refuses a part naming a table the SharePoint workbook doesn't have yet.
+WORKBOOK_ONLY = {"tblOpenJobs"}
 
 
 def _dump(obj):
@@ -566,7 +604,7 @@ def part_paths(path):
 def write_data(path, P):
     """Split the table rows into PARTS files of <= PART_MAX bytes. Returns (paths, problems)."""
     import hashlib
-    tables = {n: {"columns": c, "rows": r} for n, (c, r) in P["T"].items()}
+    tables = {n: {"columns": c, "rows": r} for n, (c, r) in P["T"].items() if n not in WORKBOOK_ONLY}
     set_id = hashlib.sha1(_dump(tables).encode()).hexdigest()[:12]
     parts = [{"part": k, "parts": PARTS, "set": set_id, "tables": {}} for k in range(1, PARTS + 1)]
     parts[-1].update(stamp=P["stamp"], about=P["about"])  # last part: usually tiny, so quiet nights upload ~2 KB
@@ -656,6 +694,10 @@ def check(path, P):
         got, exp = d[f"B{rr}"].value, (round(statistics.median(vals), 3) if vals else None)
         if (got in ("", None)) != (exp is None) or (exp is not None and abs(float(got) - exp) > 0.005):
             problems.append(f"labor $/SF cross-check {name}: sheet {got} vs python {exp}")
+    oj = P.get("oj") or []
+    got = next((d[f"B{r}"].value for r in range(1, 120) if d[f"A{r}"].value == "Open jobs"), None)
+    if got != len(oj):
+        problems.append(f"open jobs cross-check: sheet {got} vs python {len(oj)}")
     return nformula, problems
 
 
@@ -664,6 +706,7 @@ def main():
     ap.add_argument("--bid-log", required=True); ap.add_argument("--bid-metrics", required=True)
     ap.add_argument("--prices", default=""); ap.add_argument("--job-cost", default="")
     ap.add_argument("--units", default="", help="merged Bid Metrics Units.csv (labor per unit by material, size, grout)")
+    ap.add_argument("--open-jobs", default="", help="Open Jobs.csv from jobcost/open_jobs.py (Open Jobs tab)")
     ap.add_argument("--out", default="Dashboard.xlsx"); ap.add_argument("--data", default="Dashboard Data.txt")
     ap.add_argument("--previous", default="", help="folder holding the current Dashboard Data parts (skip unchanged)")
     ap.add_argument("--period", default="YTD", choices=PERIODS)

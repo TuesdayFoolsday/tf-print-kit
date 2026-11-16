@@ -612,6 +612,63 @@ def cmd_tick(a: argparse.Namespace) -> None:
     print(f"✓ {kind} tick: the operations robot starts in about a minute")
 
 
+
+def cmd_staging(a: argparse.Namespace) -> None:
+    """mkdir, move, or (narrowly) delete through the courier's `staging` Action. Switched off
+    until the deployment turns it on. Delete is refused unless the item sits inside the
+    configured staging root; the root itself is never deleted."""
+    repo = Path(a.repo)
+    _check_branch(repo, a.branch)
+    if not a.drive:
+        sys.exit("✗ staging needs --drive")
+    cid = _new_id()
+    req = {"id": cid, "kind": a.staging_cmd, "drive_id": a.drive}
+    if a.staging_cmd == "mkdir":
+        if not a.parent or not a.name:
+            sys.exit("✗ mkdir needs --parent and --name")
+        req.update(parent_id=a.parent, name=a.name)
+    elif a.staging_cmd == "move":
+        if not a.item or not a.dest:
+            sys.exit("✗ move needs --item and --dest")
+        req.update(item_id=a.item, dest_folder_id=a.dest)
+        if a.name:
+            req["name"] = a.name
+    else:  # delete
+        ids = list(a.items or [])
+        if not ids:
+            sys.exit("✗ delete needs one or more --item ids")
+        if a.purpose not in ("pass", "cleanup"):
+            sys.exit("✗ delete needs --purpose pass or cleanup")
+        req.update(item_ids=ids, purpose=a.purpose)
+    if a.out and Path(a.out).exists():
+        sys.exit(f"✗ {a.out} already exists — pick a new --out path")
+    print(f"staging {a.staging_cmd} {cid}")
+    _send_request(repo, "staging", cid, req, a.branch, f"staging {a.staging_cmd}")
+    res = _wait_json(repo, a.branch, f"results/staging-{cid}.json", a.timeout)
+    if res is None:
+        print(f"… no result yet for {cid} — look at results/staging-{cid}.json once the Action finishes")
+        sys.exit(2)
+    if a.out:
+        Path(a.out).parent.mkdir(parents=True, exist_ok=True)
+        with open(a.out, "x", encoding="utf-8") as fh:
+            json.dump(res, fh, indent=1, ensure_ascii=False)
+            fh.write("\n")
+    if res.get("status") != "ok":
+        print(f"✗ staging {cid} failed: {res.get('error', 'no reason given')}")
+        if res.get("item_id"):
+            print(f"  item {res['item_id']}")
+        for row in res.get("items") or []:
+            print(f"  {'✓' if row.get('ok') else '✗'} item {row.get('item_id','')}"
+                  + (f"  {row['error']}" if row.get("error") else ""))
+        sys.exit(1)
+    print(f"✓ staging {a.staging_cmd} {cid}"
+          + (f"  item {res['item_id']}" if res.get("item_id") else "")
+          + (f"  {len(res.get('items') or [])} item(s)" if res.get("items") else ""))
+    for row in res.get("items") or []:
+        print(f"  ✓ item {row.get('item_id','')}")
+    sys.exit(0)
+
+
 def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     sub = ap.add_subparsers(dest="cmd", required=True)
@@ -678,6 +735,27 @@ def main() -> None:
         x.add_argument("--repo", required=True)
         x.add_argument("json")
         x.set_defaults(fn=fn)
+    st = sub.add_parser("staging")
+    stg = st.add_subparsers(dest="staging_cmd", required=True)
+    def _st(name):
+        p = stg.add_parser(name)
+        p.add_argument("--repo", required=True)
+        p.add_argument("--drive", required=True)
+        p.add_argument("--branch", default="main")
+        p.add_argument("--timeout", type=int, default=600)
+        p.add_argument("--out", default="")
+        p.set_defaults(fn=cmd_staging)
+        return p
+    mk = _st("mkdir")
+    mk.add_argument("--parent", required=True)
+    mk.add_argument("--name", required=True)
+    mv = _st("move")
+    mv.add_argument("--item", required=True)
+    mv.add_argument("--dest", required=True)
+    mv.add_argument("--name", default="")
+    dl = _st("delete")
+    dl.add_argument("--item", dest="items", action="append", required=True)
+    dl.add_argument("--purpose", required=True, choices=["pass", "cleanup"])
     a = ap.parse_args()
     a.fn(a)
 

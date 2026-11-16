@@ -45,14 +45,14 @@ Intake columns and rules: docstring at the top of `jobcost/job_cost.py`.
 
 ## Open jobs vs estimate (draft, System Rules B19 / v1.37 — not live)
 
-    python3 jobcost/jc_detail_multi.py "JC Detail 2026-11-13.xls" "Open Job Actuals.csv"      # every job in the weekly export
+    python3 jobcost/jc_detail_multi.py "JC Detail 2026-11-13.xls" "Open Job Actuals.csv" [--foremen roster.txt]
     python3 jobcost/open_jobs.py --actuals "Open Job Actuals.csv" --jobs Jobs.csv --bid-metrics "Merged Bid Metrics.csv" \
         --billing "JC Cost and Revenue.xls" [--contracts "JC Contracts.xlsx"] [--laid "Job Progress - Jobs.csv"] \
         [--pm "PM Percent Complete.csv"] [--pct-source billed|pm|laid] --out "Open Jobs.csv" --summary open_jobs.json
     python3 dashboard/build_dashboard.py ... --open-jobs "Open Jobs.csv"                         # adds the Open Jobs tab
 
 The reader checks every Vista subtotal and applies the B14 mapping exactly as `vista_jc_detail.py` does (tested
-line for line). Every open job on the Jobs list gets a row; no linked estimate → "no estimate entered". The Open
+line for line). Foreman classification uses a roster file passed at runtime (`--foremen`); this public repo has no employee names. Every open job on the Jobs list gets a row; no linked estimate → "no estimate entered". The Open
 Jobs table lives in the workbook only (never in the Dashboard Data parts). The courier builds it nightly only when
 `open_jobs.enabled` is true in its `dashboard_config.json`.
 

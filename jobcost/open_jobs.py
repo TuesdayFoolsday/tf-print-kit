@@ -163,7 +163,7 @@ def build(a):
         p = num(r.get("pct_complete"))
         if r.get("job") and p is not None:
             pm[r["job"].strip()] = p / 100 if p > 1 else p
-    out, problems, over_lines = [], [], []
+    out, problems, over_lines, over_jobs = [], [], [], []
     open_numbers = set()
     for j in sorted(jobs, key=lambda r: r["VistaJobNo"].strip()):
         n = j["VistaJobNo"].strip()
@@ -235,15 +235,20 @@ def build(a):
         if worst:
             worst.sort(reverse=True)
             flags.insert(0, "over")
-            over_lines.append(f"{n} {j.get('Title', '')}: " + "; ".join(w[1] for w in worst)
+            title = (j.get("Title") or "").strip()
+            over_lines.append(f"{n} {title}: " + "; ".join(w[1] for w in worst)
                               + (f" ({pct:.0%} complete by {basis})" if pct is not None else ""))
+            over_jobs.append({"job": n, "project": title,
+                              "parts": [{"what": w[1].split()[0], "pct": w[0],
+                                         "kind": "already" if "already" in w[1] else "projected"} for w in worst],
+                              "pct_complete": pct, "pct_basis": basis})
         row["flag"] = "; ".join(flags)
         row["notes"] = "; ".join(notes)
         out.append(row)
     extra = sorted(set(acts) - open_numbers)
     if extra:
         problems.append("Vista jobs with cost but not open on the Jobs list (left out): " + ", ".join(extra))
-    return out, problems, over_lines
+    return out, problems, over_lines, over_jobs
 
 
 def main(argv=None):
@@ -255,7 +260,7 @@ def main(argv=None):
     ap.add_argument("--pct-source", default="billed", choices=PCT_SOURCES)
     ap.add_argument("--out", required=True); ap.add_argument("--summary", default="")
     a = ap.parse_args(argv)
-    rows, problems, over = build(a)
+    rows, problems, over, over_jobs = build(a)
     with open(a.out, "w", newline="", encoding="utf-8") as f:
         w = csv.DictWriter(f, fieldnames=COLS, lineterminator="\n", extrasaction="ignore")
         w.writeheader()
@@ -264,7 +269,7 @@ def main(argv=None):
     no_est = [r["job"] for r in rows if "no estimate" in r["flag"] or "claim" in r["flag"]]
     summary = {"open_jobs": len(rows), "with_estimate": len(rows) - len(no_est), "no_estimate": no_est,
                "with_pct": sum(1 for r in rows if r["pct_used"] is not None), "pct_source": a.pct_source,
-               "over": over, "problems": problems}
+               "over": over, "over_jobs": over_jobs, "problems": problems}
     if a.summary:
         json.dump(summary, open(a.summary, "w"), indent=1)
     print(f"Open Jobs: {len(rows)} open jobs · {summary['with_estimate']} matched to an estimate · "

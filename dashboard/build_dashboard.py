@@ -128,6 +128,7 @@ def prepare(a):
     movers = [p for p in read_csv(a.prices) if p.get("mover") == "y"] if a.prices and os.path.exists(a.prices) else []
     jc = read_csv(a.job_cost) if a.job_cost and os.path.exists(a.job_cost) else []
     ojp = getattr(a, "open_jobs", "")
+    show_oj = bool(ojp)
     oj = read_csv(ojp) if ojp and os.path.exists(ojp) else []
     warn = []
     if not (a.prices and os.path.exists(a.prices)):
@@ -293,11 +294,13 @@ def prepare(a):
     T["tblJobCost"] = (jcols, [[serial(day(r.get(k))) if k == "through_date" else (r.get(k) or None) if k in text else num(r.get(k))
                                 for k in jcols] for r in jc])
 
-    # tblOpenJobs — open jobs: cost to date vs estimate, % complete, projection (jobcost/open_jobs.py; System Rules B19
-    # draft). Workbook only: never sent in the Dashboard Data parts (WORKBOOK_ONLY), so Flow 3 can't trip on it.
+    # tblOpenJobs — only when --open-jobs is passed (courier switch on). Workbook only: never sent in the
+    # Dashboard Data parts (WORKBOOK_ONLY), so Flow 3 can't trip on it. With the switch off the workbook must
+    # not gain an empty Open Jobs tab or a zero-count section.
     otext = {"job", "project", "status", "estimate_id", "match", "flag", "pct_basis", "notes"}
-    T["tblOpenJobs"] = (OPEN_COLS, [[serial(day(r.get(k))) if k == "through_date" else (r.get(k) or None) if k in otext
-                                     else num(r.get(k)) for k in OPEN_COLS] for r in oj])
+    if show_oj:
+        T["tblOpenJobs"] = (OPEN_COLS, [[serial(day(r.get(k))) if k == "through_date" else (r.get(k) or None) if k in otext
+                                         else num(r.get(k)) for k in OPEN_COLS] for r in oj])
 
     # tblMovers
     mcols = ["item", "change_pct", "unit_price", "prior_price", "unit", "product", "supplier", "quote_date", "prior_date", "project"]
@@ -307,11 +310,15 @@ def prepare(a):
                                 p["project"]] for p in movers])
 
     about = [f"Rebuilt {a.stamp} from Bid Log 2026.csv ({len(bl)} rows = {len(groups)} projects, {P_MULTI} bid to more than one GC), Bid Metrics 2026.csv ({len(bm)} final estimates of {len(bm_all)}; iterations and drafts left out), "
-             f"Bid Metrics Units ({len(units)} final rows of {len(units_all)}), Job Cost History.csv ({len(jc)} rows), Price Movers.csv ({len(movers)} movers), Open Jobs.csv ({len(oj)} open jobs).",
-             "Open Jobs: Vista cost to date (weekly JC Detail, B14 buckets) vs the matched estimate. % complete = Vista billed to date "
-             "(JC Cost and Revenue) ÷ Vista contract (JC Contracts); laid % from the foreman daily reports is shown beside it; projected = cost to date ÷ % complete. 'over' = more "
-             "than 10% over the estimate (projected once 15% complete, or already). 'no estimate entered' = no Bid Metrics row is linked "
-             "to that Vista number.",
+             f"Bid Metrics Units ({len(units)} final rows of {len(units_all)}), Job Cost History.csv ({len(jc)} rows), Price Movers.csv ({len(movers)} movers)"
+             + (f", Open Jobs.csv ({len(oj)} open jobs)." if show_oj else ".")]
+    if show_oj:
+        about.append(
+            "Open Jobs: Vista cost to date (weekly JC Detail, B14 buckets) vs the matched estimate. % complete = Vista billed to date "
+            "(JC Cost and Revenue) ÷ Vista contract (JC Contracts); laid % from the foreman daily reports is shown beside it; projected = cost to date ÷ % complete. 'over' = more "
+            "than 10% over the estimate (projected once 15% complete, or already). 'no estimate entered' = no Bid Metrics row is linked "
+            "to that Vista number.")
+    about += [
              "Labor by Size: labor per block (CMU SF x 1.15), per brick (modular x 7, king x 5, Norman x 4.75, utility x 3.1) or per SF (stone, cast stone), "
              "Crew Page base wage, final estimates only; 'All grout' rows pool every grout for that material and size (the Bid Check's fallback).",
              "Hit rate (Dashboard, By Job Type) counts each PROJECT once: won if any GC awarded it to us, lost if decided against us, "
@@ -321,7 +328,7 @@ def prepare(a):
     about += [f"{d} ← " + " | ".join(raws) for d, raws in merges] or ["none"]
     about += ["", "⚠ items:"] + (warn or ["none"])
     P_proj = {k: pstatus[idx[0]] for k, idx in groups.items()}
-    return dict(T=T, bl=bl, bm=bm, units=units, warn=warn, about=about, proj=P_proj, oj=oj, stamp=f"Rebuilt {a.stamp}. Don't edit data tabs — they reload nightly.")
+    return dict(T=T, bl=bl, bm=bm, units=units, warn=warn, about=about, proj=P_proj, oj=oj, show_open_jobs=show_oj, stamp=f"Rebuilt {a.stamp}. Don't edit data tabs — they reload nightly.")
 
 
 # ---------- workbook ----------
@@ -406,7 +413,11 @@ def build(a, P):
     T = P["T"]
     wb = Workbook()
     dash = wb.active; dash.title = "Dashboard"
-    sh = {n: wb.create_sheet(n) for n in ["By GC", "By Job Type", "Labor by Size", "Labor History", "Units", "Job Cost", "Open Jobs", "Movers", "Bid Log", "About"]}
+    tabs = ["By GC", "By Job Type", "Labor by Size", "Labor History", "Units", "Job Cost"]
+    if P.get("show_open_jobs"):
+        tabs.append("Open Jobs")
+    tabs += ["Movers", "Bid Log", "About"]
+    sh = {n: wb.create_sheet(n) for n in tabs}
     for nm, ref in (("Period", "Dashboard!$C$4"), ("PeriodFrom", "Dashboard!$C$5")):
         dn = DefinedName(nm, attr_text=ref)
         if hasattr(wb.defined_names, "add"):
@@ -448,8 +459,9 @@ def build(a, P):
     of = {"through_date": DATE}
     of.update({k: (PCT if k.startswith("pct_") or k.endswith("over_pct") else "#,##0.0" if "mandays" in k else MONEY)
                for k in OPEN_COLS if k.startswith(("pct_", "est_", "act_", "proj_", "contract", "billed")) or k.endswith("over_pct")})
-    add_table(sh["Open Jobs"], "tblOpenJobs", *T["tblOpenJobs"], fmts=of,
-              widths=[7, 26, 8, 18, 16, 11, 24] + [9] * (len(OPEN_COLS) - 8) + [40])
+    if P.get("show_open_jobs"):
+        add_table(sh["Open Jobs"], "tblOpenJobs", *T["tblOpenJobs"], fmts=of,
+                  widths=[7, 26, 8, 18, 16, 11, 24] + [9] * (len(OPEN_COLS) - 8) + [40])
     add_table(sh["Movers"], "tblMovers", *T["tblMovers"],
               fmts={"change_pct": PCT, "unit_price": RATE, "prior_price": RATE, "quote_date": DATE, "prior_date": DATE},
               widths=[18, 9, 11, 11, 6, 40, 28, 11, 11, 28])
@@ -561,18 +573,19 @@ def build(a, P):
     arr(ws, f"D{j0 + 2}", f'=IF(COUNTIFS({sc},"job",{st},"final",{lv},"<>")=0,"",MEDIAN(IF(({sc}="job")*({st}="final")*({lv}<>""),{lv})))', PCT)
     put(ws, f"A{j0 + 3}", "Positive = actual over estimate. Labor $ only where the accounting export is base wage; unit-type rows only "
         "for single-unit-type jobs or a manual split.", font=F_NOTE)
-    o0 = j0 + 5
-    put(ws, f"A{o0}", "Open jobs — cost to date vs estimate (Open Jobs tab)", font=F_SECTION)
-    head(ws, o0 + 1, 1, ["", "Jobs", "", "", "", "", "", "", "", ""])
-    fl = "tblOpenJobs[flag]"
-    for i, (label, f) in enumerate([("Open jobs", "=COUNTA(tblOpenJobs[job])"),
-                                    ("Running over (>10%)", f'=COUNTIF({fl},"over*")'),
-                                    ("No estimate entered", f'=COUNTIF({fl},"*no estimate entered*")+COUNTIF({fl},"*two estimates*")'),
-                                    ("With a % complete", "=COUNT(tblOpenJobs[pct_used])")], start=o0 + 2):
-        put(ws, f"A{i}", label, font=F_BOLD)
-        put(ws, f"B{i}", f, INT)
-    put(ws, f"A{o0 + 6}", "Weekly Vista JC Detail (Monday drop in _Drop Box). Jobs with no estimate: link the estimate "
-        "(Jobs row EstimateID) so they can be tracked.", font=F_NOTE)
+    if P.get("show_open_jobs"):
+        o0 = j0 + 5
+        put(ws, f"A{o0}", "Open jobs — cost to date vs estimate (Open Jobs tab)", font=F_SECTION)
+        head(ws, o0 + 1, 1, ["", "Jobs", "", "", "", "", "", "", "", ""])
+        fl = "tblOpenJobs[flag]"
+        for i, (label, f) in enumerate([("Open jobs", "=COUNTA(tblOpenJobs[job])"),
+                                        ("Running over (>10%)", f'=COUNTIF({fl},"over*")'),
+                                        ("No estimate entered", f'=COUNTIF({fl},"*no estimate entered*")+COUNTIF({fl},"*two estimates*")'),
+                                        ("With a % complete", "=COUNT(tblOpenJobs[pct_used])")], start=o0 + 2):
+            put(ws, f"A{i}", label, font=F_BOLD)
+            put(ws, f"B{i}", f, INT)
+        put(ws, f"A{o0 + 6}", "Weekly Vista JC Detail (Monday drop in _Drop Box). Jobs with no estimate: link the estimate "
+            "(Jobs row EstimateID) so they can be tracked.", font=F_NOTE)
     ws.freeze_panes = "A6"
 
     for s_ in (dash, sh["By GC"], sh["By Job Type"]):
@@ -694,10 +707,11 @@ def check(path, P):
         got, exp = d[f"B{rr}"].value, (round(statistics.median(vals), 3) if vals else None)
         if (got in ("", None)) != (exp is None) or (exp is not None and abs(float(got) - exp) > 0.005):
             problems.append(f"labor $/SF cross-check {name}: sheet {got} vs python {exp}")
-    oj = P.get("oj") or []
-    got = next((d[f"B{r}"].value for r in range(1, 120) if d[f"A{r}"].value == "Open jobs"), None)
-    if got != len(oj):
-        problems.append(f"open jobs cross-check: sheet {got} vs python {len(oj)}")
+    if P.get("show_open_jobs"):
+        oj = P.get("oj") or []
+        got = next((d[f"B{r}"].value for r in range(1, 120) if d[f"A{r}"].value == "Open jobs"), None)
+        if got != len(oj):
+            problems.append(f"open jobs cross-check: sheet {got} vs python {len(oj)}")
     return nformula, problems
 
 

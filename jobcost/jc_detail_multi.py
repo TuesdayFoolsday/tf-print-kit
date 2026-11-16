@@ -1,7 +1,7 @@
 """Vista JC Detail for MANY jobs (.xls, JCDetail.rpt saved as Excel) -> one row of actuals per job, B14 mapping.
 
     python3 jobcost/jc_detail_multi.py "<JC Detail YYYY-MM-DD.xls>" "<out Open Job Actuals.csv>" [--through YYYY-MM-DD]
-        [--jobs 2502,2622] [--actuals-dir <dir>]
+        [--jobs 4101,4108] [--actuals-dir <dir>] [--foremen roster.txt]
 
 The weekly export David drops in SharePoint `_Drop Box` (B2 files it to Leadership › Job Cost) covers every open job.
 This reader follows the job / phase / cost-type headers on every sheet (Excel splits the report at 65k rows) with the
@@ -15,14 +15,16 @@ Buckets = System Rules B14 (David 2026-11-01), exactly as jobcost/vista_jc_detai
 * M and I = material (Vista AP includes tax); E and R = equipment; O = other; S = sub; anything else
   (SL, INV, ...) = other, listed in the job's notes so nothing is hidden.
 * Man-days = WHOLE-CREW hours / 8 (all L hours outside 01650), compared with the estimate's Crew Page hours / 8.
-* Classes (shown, not used in the man-day total): craft 1/... = bricklayer, except a name on the foreman roster
-  = foreman; craft 2/... = laborer, except anyone averaging $25-28/hr on the job = operator.
+* Classes (shown, not used in the man-day total): craft 1/... = bricklayer, except a name on the
+  runtime foreman roster (--foremen) = foreman; craft 2/... = laborer, except anyone averaging
+  $25-28/hr on the job = operator. The roster is supplied at runtime; this file has no employee names.
 
 --actuals-dir also writes, per job, the job_cost.py actuals.csv (same columns and rows vista_jc_detail.py writes),
 with final = n (open jobs are never final) and estimate left blank for the caller to fill from the match.
 """
 import argparse, csv, os, re, sys
 from collections import defaultdict
+from foremen import is_foreman, load_roster
 
 JOB = re.compile(r"^\s*(\d{4})-\s{2}(.*?)\s*(- Continued)?\s*$")
 PH = re.compile(r"^\s*(\d{5})-\s+-\s+(.*?)\s{2,}(\d+)\s+([A-Z]+)\s*$")
@@ -30,10 +32,6 @@ TOT = re.compile(r"^Total (for Cost Type|For Phase|For Job):\s*(.*)$", re.I)
 PRD = re.compile(r"^(?:(\d+)/(.+?)\s+)?([\d.]+)\s+/\s+(\d+)\s+/\s+(.*?)\s*(\d{1,3})\s+(\S.*)$")
 DATED = re.compile(r"(\d{4}-\d{2}-\d{2})")
 
-# Foreman roster (jc_detail_summary.py, David Nov 4 2026). Edit there and here together.
-FOREMEN = {"Leon, Abel", "Borja II, Frank R.", "Barragan, Ignacio", "Angulo-Nagy, Wilman A.", "Banuelos, Oscar",
-           "Rico-Robles Jr, Ruben", "Crissinger, Matthew E.", "Barker, Donald P", "Frilot, Antoine R", "Flores, Abel",
-           "Porras, Tommy", "Guizar, Juan J", "Valencia, Ignacio", "Valladares, Jose", "Mills, Jeffrey", "Perez, Jose"}
 BUCKET = {"M": "material", "I": "material", "E": "equipment", "R": "equipment", "O": "other", "S": "sub"}
 COLS = ["job", "job_name", "through_date", "recon_ok", "rows", "first_month", "last_month", "last_actual_date",
         "labor_hours", "act_mandays", "hours_bricklayer", "hours_foreman", "hours_laborer", "hours_operator",
@@ -120,7 +118,7 @@ def through_from_name(path):
     return m.group(1) if m else ""
 
 
-def summarize(data, through="", only=None):
+def summarize(data, through="", only=None, roster=None):
     """B14 buckets per job -> list of dicts (COLS)."""
     by_job = defaultdict(list)
     for r in data["rows"]:
@@ -143,7 +141,7 @@ def summarize(data, through="", only=None):
 
         def cls(r):
             p = r["employee"] or r["description"]
-            if p in FOREMEN:
+            if is_foreman(p, roster):
                 return "foreman"
             if r["craft"] == "2" or r["description"].startswith("2/"):
                 h, c = rate[p]
@@ -199,10 +197,10 @@ def summarize(data, through="", only=None):
     return out
 
 
-def actuals_rows(data, job, through, estimate=""):
+def actuals_rows(data, job, through, estimate="", roster=None):
     """job_cost.py actuals.csv rows for one job, line for line as vista_jc_detail.py writes them (final = n)."""
     rs = [r for r in data["rows"] if r["job"] == job]
-    s = summarize({**data, "rows": rs}, through)[0] if rs else None
+    s = summarize({**data, "rows": rs}, through, roster=roster)[0] if rs else None
     rate = defaultdict(lambda: [0.0, 0.0])
     for r in rs:
         if r["ct"] == "L" and r["hours"] > 0:
@@ -217,7 +215,7 @@ def actuals_rows(data, job, through, estimate=""):
                 out.append({**base, "cost_type": "other", "amount": f"{r['cost']:.2f}"})
             elif r["hours"] > 0:
                 p = r["employee"] or r["description"]
-                if p in FOREMEN:
+                if is_foreman(p, roster):
                     c = "foreman"
                 elif r["craft"] == "2" or r["description"].startswith("2/"):
                     h, cc = rate[p]; c = "operator" if 25 <= cc / h <= 28.0001 else "laborer"
@@ -242,16 +240,18 @@ def main(argv=None):
     ap.add_argument("--through", default="", help="YYYY-MM-DD; default: the date in the file name, else the last line's date")
     ap.add_argument("--jobs", default="", help="comma list of Vista job numbers to keep (default: all)")
     ap.add_argument("--actuals-dir", default="")
+    ap.add_argument("--foremen", default="", help="roster file (one name per line, or a JSON list). No file = classify by craft and rate only")
     a = ap.parse_args(argv)
     data = read(a.xls)
     through = a.through or through_from_name(a.xls)
     only = {j.strip() for j in a.jobs.split(",") if j.strip()} or None
-    rows = summarize(data, through, only)
+    roster = load_roster(a.foremen) if a.foremen else []
+    rows = summarize(data, through, only, roster=roster)
     write_csv(a.out, rows, COLS)
     if a.actuals_dir:
         os.makedirs(a.actuals_dir, exist_ok=True)
         for r in rows:
-            act, _ = actuals_rows(data, r["job"], r["through_date"])
+            act, _ = actuals_rows(data, r["job"], r["through_date"], roster=roster)
             write_csv(os.path.join(a.actuals_dir, f"{r['job']} actuals.csv"), act, ACOLS)
     tot = sum(r["cost"] for r in data["rows"])
     print(f"{len(rows)} jobs · {len(data['rows'])} lines · ${tot:,.2f} · {len(data['recon'])} Vista subtotals checked, "

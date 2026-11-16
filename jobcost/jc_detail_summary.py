@@ -1,20 +1,25 @@
 """Ledger CSV (from jc_detail_ledger.py) -> tagged ledger CSV + Excel summary workbook with live SUMIFS formulas.
 
-    python3 jobcost/jc_detail_summary.py <ledger.csv> "<out Ledger.csv>" "<out Summary.xlsx>" "<title line for the Notes tab>"
+    python3 jobcost/jc_detail_summary.py <ledger.csv> "<out Ledger.csv>" "<out Summary.xlsx>" "<title line>" [--foremen roster.txt]
 
-Adds the cost bucket (System Rules B14 mapping) and the employee role (foreman list below, mason, operator, laborer)
+Adds the cost bucket (System Rules B14 mapping) and the employee role (runtime foreman roster, mason, operator, laborer)
 to every row, then builds Jobs / Job by Month / Employees / Vendors / Materials / Notes tabs over a Ledger tab.
 Documented in Preconstruction _Knowledge/Job Cost Ledgers - Build Sheet.md. Built Nov 4, 2026.
 """
-import csv, re
+import argparse, csv, re, sys
 from collections import defaultdict, OrderedDict
+from pathlib import Path
 from openpyxl import Workbook
 from openpyxl.styles import Font, PatternFill, Alignment
 from openpyxl.utils import get_column_letter
-import sys
-SRC,LEDGER,XLSX,TITLE=sys.argv[1:5]
+from foremen import is_foreman, load_roster
+ap=argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+ap.add_argument("src"); ap.add_argument("ledger"); ap.add_argument("xlsx"); ap.add_argument("title")
+ap.add_argument("--foremen", default="", help="roster file (one name per line, or a JSON list). No file = classify by craft and rate only")
+_a=ap.parse_args()
+SRC,LEDGER,XLSX,TITLE=_a.src,_a.ledger,_a.xlsx,_a.title
 rows=list(csv.DictReader(open(SRC)))
-FOREMEN={"Leon, Abel","Borja II, Frank R.","Barragan, Ignacio","Angulo-Nagy, Wilman A.","Banuelos, Oscar","Rico-Robles Jr, Ruben","Crissinger, Matthew E.","Barker, Donald P","Frilot, Antoine R","Flores, Abel","Porras, Tommy","Guizar, Juan J","Valencia, Ignacio","Valladares, Julio C","Mills, Randy D.","Perez, Joel A"}
+ROSTER=load_roster(_a.foremen) if _a.foremen else []
 # employee avg regular rate
 emp=defaultdict(lambda:[0.0,0.0,set()])
 for r in rows:
@@ -23,7 +28,7 @@ for r in rows:
 role={}
 for name,(h,c,cl) in emp.items():
     avg=c/h if h else 0
-    if name in FOREMEN: role[name]="foreman"
+    if is_foreman(name, ROSTER): role[name]="foreman"
     elif any(x in ("Bricklayer","Journeyman","Level 3","Foreman") for x in cl): role[name]="mason"
     elif 25<=avg<=28: role[name]="operator"
     else: role[name]="laborer"
@@ -119,7 +124,7 @@ for i,(name,(h,c,cl)) in enumerate(sorted(emp.items(),key=lambda x:-x[1][0]),2):
       f'=SUMIFS({rng("cost")},{rng("employee")},$A{i},{rng("bucket")},"labor_burden")',
       f'=IF(E{i}=0,0,G{i}/E{i})',
       f'=SUMPRODUCT(({rng("employee")}=$A{i})*({rng("earn_desc")}="Regular Earnings")/COUNTIFS({rng("employee")},{rng("employee")},{rng("earn_desc")},"Regular Earnings",{rng("job")},{rng("job")}))' if False else '',
-      'yes' if name in FOREMEN else ''])
+      'yes' if is_foreman(name, ROSTER) else ''])
 style_header(es,10); es.column_dimensions['A'].width=36; es.column_dimensions['C'].width=28
 for row in es.iter_rows(min_row=2):
     for c in row:
@@ -162,7 +167,7 @@ ns=wb.create_sheet('Notes')
 notes=[TITLE,
 f"Source rows: {len(rows):,} transactions; ${sum(float(r['cost']) for r in rows):,.2f}; {sum(float(r['hours']) for r in rows):,.1f} hours. Every cost-type, phase and job subtotal in the report matched the parsed rows.",
 "Buckets (per System Rules B14 mapping, David Nov 1 2026): labor_base = cost type 1 Regular Earnings (with hours); labor_burden = cost type 1 Payroll Tax, Workmen's Comp, 401K Match, FUTA, SUTA, Liability Insurance, Health Insurance; labor_trucking = phase 01650 Regular Earnings; labor_misc = earn code 30 Miscellaneous (no hours); material = cost types 2-M and 8-I; equipment = 4-E and 5-R; sub = 3-S; sub_labor = 11-SL; other = 6-O; inventory = 10-INV (nets to zero).",
-"Roles: foreman = named on the Operations Field roster (Leon, Borja, Barragan, Angulo-Nagy A., Banuelos O., Rico-Robles Jr) plus Crissinger, Don Barker, Frilot, Flores, Porras, Guizar, Valencia, Valladares, Mills and Perez (David, Nov 4; John Cody Barker is a mason); mason = craft 1 (Bricklayer, Journeyman, Level 3); operator = craft 2 with average regular rate $25-28/hr (Israel Gonzalez only); laborer = other craft 2. Edit the Foreman column on Employees and tell Claude if any are wrong.",
+"Roles: foreman = named on the roster passed with --foremen (the Operations Field group, supplied at runtime; this file has no employee names); mason = craft 1 (Bricklayer, Journeyman, Level 3); operator = craft 2 with average regular rate $25-28/hr; laborer = other craft 2. Edit the Foreman column on Employees and tell Claude if any are wrong.",
 "Cost type 11 SL and 3 S are both Texas E & D Masonry (labor subcontract); several invoices were posted to one type and reversed into another, so read sub + sub labor together.",
 
 "All summary sheets are live formulas over the Ledger sheet. Add rows to Ledger and they update."]

@@ -65,7 +65,7 @@ class OpenJobs(unittest.TestCase):
                              [dict(vista_no="2601", total_cost=70000, billed=100000), dict(vista_no="2602", total_cost=4000, billed=3000)])
         # 2602 has 0 in Vista (as every job did on Nov 16); the Jobs list's ContractValue is never read.
         self.contracts = contracts_xlsx(d / "c.xlsx", {"2601": 200000, "2602": 0, "2604": 5000})
-        self.pm = write(d / "pm.csv", ["job", "pct_complete", "as_of", "by"], [dict(job="2602", pct_complete="40", as_of="2026-11-13", by="Jason")])
+        self.pm = write(d / "pm.csv", ["job", "pct_complete", "as_of", "by"], [dict(job="2602", pct_complete="40", as_of="2026-11-13", by="Pat")])
         self.laid = write(d / "laid.csv", ["job", "job_pct_complete"], [dict(job="2601", job_pct_complete="45.0")])
 
     def tearDown(self):

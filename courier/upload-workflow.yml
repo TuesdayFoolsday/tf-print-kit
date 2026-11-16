@@ -1,0 +1,52 @@
+# Copy of .github/workflows/upload.yml in the private courier repo (TuesdayFoolsday/tf-courier), which sets the allow-list.
+# The courier repo carries its own copy of courier/box.py, receive.py, fetch.py and upload.py (so it keeps working if the print kit goes private).
+# Courier upload: big files into SharePoint without their bytes passing through git.
+# The box pushes upload/<id>.tfc (print kit `send.py upload`): a "session" request (courier/upload.py creates Graph upload
+# sessions and seals the upload URLs for the box into pickup/up-<id>.tfc), then, after the box has sent the bytes straight
+# to SharePoint, a "verify" request (downloads each file streaming and compares size + SHA-256). Results: results/upload-<id>.json
+# (no names, no URLs). Unclaimed pickups older than 24 hours are deleted. GitHub emails the owner on failure.
+# Uses the courier secrets (TENANT_ID, CLIENT_ID, CLIENT_SECRET, COURIER_PRIVATE_KEY).
+# UPLOAD_ALLOWED_FOLDERS: the only folders (item ids, comma-separated) a session may be opened in; empty refuses everything.
+name: upload
+on:
+  push:
+    # scout-upload-session is a test branch so this can be tried before it is merged to main; remove it after the merge if wanted.
+    branches: [main, scout-upload-session]
+    paths: ["upload/**"]
+  workflow_dispatch:
+concurrency:
+  group: upload
+  cancel-in-progress: false
+permissions:
+  contents: write
+jobs:
+  upload:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.ref_name }}
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install -q cryptography requests
+      - id: run
+        run: python3 courier/upload.py --repo . || echo "failed=1" >> "$GITHUB_OUTPUT"
+        env:
+          TENANT_ID: ${{ secrets.TENANT_ID }}
+          CLIENT_ID: ${{ secrets.CLIENT_ID }}
+          CLIENT_SECRET: ${{ secrets.CLIENT_SECRET }}
+          COURIER_PRIVATE_KEY: ${{ secrets.COURIER_PRIVATE_KEY }}
+          UPLOAD_ALLOWED_FOLDERS: ""  # set this in the private repo's copy: the folder item ids uploads may go to
+      - name: record results, empty the request folder
+        run: |
+          git config user.name "TuesdayFoolsday"
+          git config user.email "TuesdayFoolsday@users.noreply.github.com"
+          git add -A upload pickup results
+          git diff --cached --quiet && exit 0
+          git commit -q -m "uploaded"
+          for i in 1 2 3 4; do git push -q origin "HEAD:${{ github.ref_name }}" && exit 0; sleep 5; git pull -q --rebase origin "${{ github.ref_name }}"; done
+          exit 1
+      - if: steps.run.outputs.failed == '1'
+        run: echo "::error::An upload step failed — see results/upload-*.json and the step above" && exit 1

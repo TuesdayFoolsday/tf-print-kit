@@ -78,3 +78,29 @@ the one-time key into `pickup/` and writes `results/fetch-<id>.json` (size, fing
 sealed copy left in git history can't be opened by anyone), then prints the `send` command for the way back.
 `--if-unchanged` makes the courier refuse the replace if the file in SharePoint changed since the fetch. Uncollected
 pickups are deleted after 24 hours.
+
+**List (what is in a SharePoint folder):**
+
+    python3 courier/send.py list --repo <courier clone> --drive <driveId> (--item <folderId> | --path "<path>") \
+        [--depth 2] [--branch main] --out <listing.json>
+
+Same route as `fetch` (the `fetch` Action, request kind `list`): the folder's children, plus those of each sub-folder
+down to `--depth` more levels (0 … 4, at most 5000 entries), sealed with a one-time key. `--out` gets
+`{id, drive_id, root_id, entries[path, name, id, size, is_folder, quickxor, sha256, modified]}` (never overwrites);
+the pickup is deleted from the repo and the key thrown away.
+
+**Upload (big files: the bytes never go through git):**
+
+    python3 courier/send.py upload --repo <courier clone> --drive <driveId> --folder <folderId> [--branch main] \
+        [--timeout 3600] [--chunk-mb 10] [--summary <file.json>] <local file>[=<SharePoint name>] ...
+    python3 courier/send.py upload-wait --repo <courier clone> [--branch main] [--timeout 3600] <id>   # after exit 2
+
+Any size from 1 byte (SharePoint's own limit is 250 GB). `upload` prints the id, hashes each file (SHA-256 and
+`courier/quickxor.py`'s QuickXorHash), pushes a sealed `session` request; the `upload` Action
+(`courier/upload-workflow.yml` → `courier/upload.py`, only to folders on its allow-list) creates a Graph upload session per
+file and seals the upload URLs for the box; the box PUTs the bytes straight to SharePoint in chunks (multiples of
+320 KiB, default 10 MiB; resumes after errors with the session's `nextExpectedRanges`; the URLs are pre-authenticated, so no token is sent, and they are
+never printed); then a sealed `verify` request makes the Action stream each file back and compare size, SHA-256 and
+quickXorHash. One line per file (index, bytes, sha256, item id, ✓/✗). Exit 0 all verified · 1 any failed · 2 no result in
+time (`upload-wait`). A name that already exists in the folder fails that file; nothing is replaced. `--branch` is where the
+requests are pushed (the clone must have it checked out unless it is `main`). Tests: `python3 -m unittest discover tests`.

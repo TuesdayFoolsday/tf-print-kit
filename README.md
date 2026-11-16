@@ -97,7 +97,7 @@ the pickup is deleted from the repo and the key thrown away.
 
 Any size from 1 byte (SharePoint's own limit is 250 GB). `upload` prints the id, hashes each file (SHA-256 and
 `courier/quickxor.py`'s QuickXorHash), pushes a sealed `session` request; the `upload` Action
-(`courier/upload-workflow.yml` → `courier/upload.py`, only to folders on its allow-list) creates a Graph upload session per
+(`courier/upload-workflow.yml` → `courier/upload.py`, only to folders on its allow-list; a deployment can also allow job subfolders by name, e.g. a plans folder inside an existing job folder) creates a Graph upload session per
 file and seals the upload URLs for the box; the box PUTs the bytes straight to SharePoint in chunks (multiples of
 320 KiB, default 10 MiB; resumes after errors with the session's `nextExpectedRanges`; the URLs are pre-authenticated, so no token is sent, and they are
 never printed); then a sealed `verify` request makes the Action stream each file back and compare size, SHA-256 and

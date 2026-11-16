@@ -6,7 +6,9 @@
 # to SharePoint, a "verify" request (downloads each file streaming and compares size + SHA-256). Results: results/upload-<id>.json
 # (no names, no URLs). Unclaimed pickups older than 24 hours are deleted. GitHub emails the owner on failure.
 # Uses the courier secrets (TENANT_ID, CLIENT_ID, CLIENT_SECRET, COURIER_PRIVATE_KEY).
-# UPLOAD_ALLOWED_FOLDERS: the only folders (item ids, comma-separated) a session may be opened in; empty refuses everything.
+# UPLOAD_ALLOWED_FOLDERS: fixed folders (item ids, comma-separated) a session may be opened in; empty refuses everything.
+# UPLOAD_JOB_SUBFOLDERS: folder names also allowed when directly inside a job folder (a folder not starting with `_`, in the
+# drive root or in one of UPLOAD_STATUS_FOLDERS, which sit at the root), in the drive UPLOAD_DRIVE only; empty allows none.
 name: upload
 on:
   push:
@@ -39,6 +41,9 @@ jobs:
           CLIENT_SECRET: ${{ secrets.CLIENT_SECRET }}
           COURIER_PRIVATE_KEY: ${{ secrets.COURIER_PRIVATE_KEY }}
           UPLOAD_ALLOWED_FOLDERS: ""  # set this in the private repo's copy: the folder item ids uploads may go to
+          UPLOAD_DRIVE: ""  # private repo's copy: the one drive job subfolders are allowed in
+          UPLOAD_JOB_SUBFOLDERS: ""  # private repo's copy: comma-separated subfolder names allowed inside a job folder
+          UPLOAD_STATUS_FOLDERS: ""  # private repo's copy: comma-separated status folder names that may hold job folders
       - name: record results, empty the request folder
         run: |
           git config user.name "TuesdayFoolsday"

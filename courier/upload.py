@@ -5,8 +5,10 @@ A box runs print kit `send.py upload`, which pushes <repo>/upload/<id>.tfc: requ
 Two kinds, both handled here (COURIER_PRIVATE_KEY, Microsoft Graph sign-in as in receive.py):
 
   session  {kind, id, drive_id, folder_id, reply_pub, files[{index, name, bytes, sha256}]}
-           Refused unless folder_id is one of UPLOAD_ALLOWED_FOLDERS (comma-separated item ids; empty refuses
-           everything). Per file: the name must be SharePoint-safe and not already exist in the folder (nothing is ever
+           Refused unless folder_allowed(): folder_id is one of UPLOAD_ALLOWED_FOLDERS (comma-separated item ids), or a
+           folder named one of UPLOAD_JOB_SUBFOLDERS (comma-separated names) directly inside a job folder (a folder not
+           starting with `_`, in the drive root or in one of the UPLOAD_STATUS_FOLDERS, which sit at the root), in the
+           drive UPLOAD_DRIVE only. Empty settings allow nothing. Per file: the name must be SharePoint-safe and not already exist in the folder (nothing is ever
            replaced), then a Graph upload session is created (conflictBehavior fail). The upload URLs are sealed with
            the box's one-time key into <repo>/pickup/up-<id>.tfc; the box PUTs the bytes straight to SharePoint.
   verify   {kind, id, drive_id, folder_id, files[{index, item_id, name, bytes, sha256, quickxor?}]}
@@ -38,6 +40,10 @@ from box import open_box, seal  # noqa: E402
 from receive import GRAPH, OFFICE, token  # noqa: E402
 
 ALLOWED_FOLDERS = {x.strip() for x in os.environ.get("UPLOAD_ALLOWED_FOLDERS", "").split(",") if x.strip()}
+UPLOAD_DRIVE = os.environ.get("UPLOAD_DRIVE", "").strip()
+JOB_SUBFOLDERS = {x.strip() for x in os.environ.get("UPLOAD_JOB_SUBFOLDERS", "").split(",") if x.strip()}
+STATUS_FOLDERS = {x.strip() for x in os.environ.get("UPLOAD_STATUS_FOLDERS", "").split(",") if x.strip()}
+_META: dict = {}   # (drive, item id) -> Graph metadata (or an error string), for this run
 STALE = timedelta(hours=24)
 CHUNK = 8 * 1024 * 1024
 
@@ -67,18 +73,73 @@ def stream_sha256(url: str, hdr: dict) -> tuple[str, int]:
     return h.hexdigest(), n
 
 
+def _meta(drive: str, item_id, hdr: dict):
+    """Folder metadata from Graph (cached for the run): a dict, or a str saying why it couldn't be read."""
+    key = (drive, item_id)
+    if key not in _META:
+        try:
+            r = requests.get(f"{GRAPH}/drives/{drive}/items/{urllib.parse.quote(str(item_id), safe='')}"
+                             "?$select=id,name,folder,parentReference", headers=hdr, timeout=60)
+            _META[key] = r.json() if r.status_code == 200 else f"couldn't look up the folder ({r.status_code})"
+        except Exception as e:
+            _META[key] = f"couldn't look up the folder ({type(e).__name__})"
+    return _META[key]
+
+
+def _is_root(m: dict) -> bool:
+    """The drive root: carries the `root` facet, or has no parent item."""
+    return "root" in m or not (m.get("parentReference") or {}).get("id")
+
+
+def _parent(m: dict, drive: str, hdr: dict):
+    return _meta(drive, (m.get("parentReference") or {}).get("id"), hdr)
+
+
+def folder_allowed(drive: str, folder_id: str, hdr: dict) -> str:
+    """'' when uploads may go to this folder, else the reason. Fixed ids, or `02 Plans - Full` / `04 Addenda` directly
+    inside a job folder (root/<job> or root/<status folder>/<job>) of the one configured drive."""
+    if folder_id in ALLOWED_FOLDERS:
+        return ""
+    no = "that folder is not on the upload allow-list — refused"
+    if not JOB_SUBFOLDERS or not UPLOAD_DRIVE or drive != UPLOAD_DRIVE or not folder_id:
+        return no
+    m = _meta(drive, folder_id, hdr)
+    if isinstance(m, str):
+        return m
+    if "folder" not in m or m.get("name") not in JOB_SUBFOLDERS or _is_root(m):
+        return no
+    chain = [m]
+    for _ in range(3):   # subfolder -> job folder -> (status folder ->) root
+        up = _parent(chain[-1], drive, hdr)
+        if isinstance(up, str):
+            return up
+        chain.append(up)
+        if _is_root(up):
+            break
+    else:
+        return no
+    names = [c.get("name", "") for c in chain[1:-1]]   # between the subfolder and the root
+    if any("folder" not in c for c in chain[1:-1]) or not names or names[0].startswith("_"):
+        return no
+    if len(names) == 1:
+        return ""
+    if len(names) == 2 and names[1] in STATUS_FOLDERS:
+        return ""
+    return no
+
+
 def make_sessions(req: dict, tok: str) -> tuple[list[dict], list[dict]]:
     """-> (rows for the sealed pickup (ready files only), result rows without names or URLs)"""
     hdr = {"Authorization": f"Bearer {tok}"}
     drive, folder = req["drive_id"], req["folder_id"]
-    allowed = folder in ALLOWED_FOLDERS
+    why = folder_allowed(drive, folder, hdr)
     sealed_rows, rows = [], []
     for f in req["files"]:
         row = {"index": f.get("index"), "bytes": f.get("bytes"), "sha256": f.get("sha256"), "ready": False}
         rows.append(row)
         try:
-            if not allowed:
-                raise RuntimeError("that folder is not on the upload allow-list — refused")
+            if why:
+                raise RuntimeError(why)
             if name_problem(f.get("name")):
                 raise RuntimeError(name_problem(f.get("name")))
             if not isinstance(f.get("bytes"), int) or f["bytes"] < 1 or not _is_sha(f.get("sha256")):
@@ -108,14 +169,15 @@ def make_sessions(req: dict, tok: str) -> tuple[list[dict], list[dict]]:
 def verify_files(req: dict, tok: str) -> list[dict]:
     hdr = {"Authorization": f"Bearer {tok}"}
     drive, folder = req["drive_id"], req["folder_id"]
+    why = folder_allowed(drive, folder, hdr)
     rows = []
     for f in req["files"]:
         row = {"index": f.get("index"), "bytes": f.get("bytes"), "sha256": f.get("sha256"),
                "item_id": f.get("item_id"), "verified": False}
         rows.append(row)
         try:
-            if folder not in ALLOWED_FOLDERS:
-                raise RuntimeError("that folder is not on the upload allow-list — refused")
+            if why:
+                raise RuntimeError(why)
             iid = urllib.parse.quote(str(f["item_id"]), safe="")
             m = requests.get(f"{GRAPH}/drives/{drive}/items/{iid}", headers=hdr, timeout=60)
             if m.status_code != 200:

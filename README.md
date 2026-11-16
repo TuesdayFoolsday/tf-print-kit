@@ -36,6 +36,18 @@ Rebuilds each listed estimate from its source file and writes pending changes fo
 rebuild matches what is stored (bid price, labor by unit type, same Units rows, each within $2). Dry run without --write.
 Run it after the v2 code is merged (the merge must know the new columns). Tests: `python3 -m unittest discover tests`.
 
+**Staging (optional, switched off until a deployment turns it on):**
+
+    python3 courier/send.py staging mkdir --repo <courier clone> --drive <driveId> --parent <folderId> --name "<name>" [--branch main]
+    python3 courier/send.py staging move  --repo <courier clone> --drive <driveId> --item <itemId> --dest <folderId> [--name "<new name>"]
+    python3 courier/send.py staging delete --repo <courier clone> --drive <driveId> --purpose pass|cleanup --item <itemId> [--item <itemId> ...]
+
+Creates a folder, moves an item, or deletes items, through the courier's `staging` Action (`courier/staging-workflow.yml` →
+`courier/staging.py`). A deployment points this at one staging root folder (by name). Delete is refused unless the item
+sits inside that root; the root itself is never deleted. Nothing is replaced. Switched off by default. `--out` writes the
+result JSON (item ids only, no names). Exit 0 ok · 1 failed · 2 no result yet.
+
+
 ## Job cost history
 
     python3 jobcost/job_cost.py template <dir>          # blank intake files

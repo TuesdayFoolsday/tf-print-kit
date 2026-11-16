@@ -1,0 +1,50 @@
+# Copy of .github/workflows/staging.yml in the private courier repo.
+# Create, move, or (narrowly) delete items inside a configured staging root folder.
+# Switched off until that deployment's staging_config.json has "enabled": true.
+# Delete is refused unless the item sits inside the staging root; the root itself is never deleted.
+name: staging
+on:
+  push:
+    branches: [main]
+    paths: ["staging/**"]
+  workflow_dispatch:
+concurrency:
+  group: staging
+  cancel-in-progress: false
+permissions:
+  contents: write
+jobs:
+  staging:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.ref_name }}
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install -q cryptography requests
+      - id: run
+        run: python3 courier/staging.py --repo . || echo "failed=1" >> "$GITHUB_OUTPUT"
+        env:
+          TENANT_ID: ${{ secrets.TENANT_ID }}
+          CLIENT_ID: ${{ secrets.CLIENT_ID }}
+          CLIENT_SECRET: ${{ secrets.CLIENT_SECRET }}
+          COURIER_PRIVATE_KEY: ${{ secrets.COURIER_PRIVATE_KEY }}
+          UPLOAD_DRIVE: ""
+          UPLOAD_JOB_SUBFOLDERS: ""
+          UPLOAD_STATUS_FOLDERS: ""
+          STAGING_ROOT_NAME: ""
+          STAGING_MOVE_DEST_SUBFOLDERS: ""
+      - name: record results, empty the request folder
+        run: |
+          git config user.name "github-actions"
+          git config user.email "github-actions@users.noreply.github.com"
+          git add -A staging results
+          git diff --cached --quiet && exit 0
+          git commit -q -m "staged"
+          for i in 1 2 3 4; do git push -q origin "HEAD:${{ github.ref_name }}" && exit 0; sleep 5; git pull -q --rebase origin "${{ github.ref_name }}"; done
+          exit 1
+      - if: steps.run.outputs.failed == '1'
+        run: echo "::error::A staging step failed — see results/staging-*.json and the step above" && exit 1

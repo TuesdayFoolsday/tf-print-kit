@@ -8,7 +8,7 @@ Two kinds, both handled here (COURIER_PRIVATE_KEY, Microsoft Graph sign-in as in
            Refused unless folder_allowed(): folder_id is one of UPLOAD_ALLOWED_FOLDERS (comma-separated item ids), or a
            folder named one of UPLOAD_JOB_SUBFOLDERS (comma-separated names) directly inside a job folder (a folder not
            starting with `_`, in the drive root or in one of the UPLOAD_STATUS_FOLDERS, which sit at the root), in the
-           drive UPLOAD_DRIVE only. Empty settings allow nothing. Per file: the name must be SharePoint-safe and not already exist in the folder (nothing is ever
+           drive UPLOAD_DRIVE only. Empty settings allow nothing. When STAGING_ENABLED is true, a pending job folder directly under the configured staging root (or a plans/addenda subfolder inside one) is also allowed. Per file: the name must be SharePoint-safe and not already exist in the folder (nothing is ever
            replaced), then a Graph upload session is created (conflictBehavior fail). The upload URLs are sealed with
            the box's one-time key into <repo>/pickup/up-<id>.tfc; the box PUTs the bytes straight to SharePoint.
   verify   {kind, id, drive_id, folder_id, files[{index, item_id, name, bytes, sha256, quickxor?}]}
@@ -38,6 +38,7 @@ from cryptography.exceptions import InvalidTag
 sys.path.insert(0, str(Path(__file__).parent))
 from box import open_box, seal  # noqa: E402
 from receive import GRAPH, OFFICE, token  # noqa: E402
+import staging_lib as sl  # noqa: E402
 
 ALLOWED_FOLDERS = {x.strip() for x in os.environ.get("UPLOAD_ALLOWED_FOLDERS", "").split(",") if x.strip()}
 UPLOAD_DRIVE = os.environ.get("UPLOAD_DRIVE", "").strip()
@@ -97,8 +98,10 @@ def _parent(m: dict, drive: str, hdr: dict):
 
 def folder_allowed(drive: str, folder_id: str, hdr: dict) -> str:
     """'' when uploads may go to this folder, else the reason. Fixed ids, or a subfolder named in UPLOAD_JOB_SUBFOLDERS directly
-    inside a job folder (root/<job> or root/<status folder>/<job>) of the one configured drive."""
+    inside a job folder (root/<job> or root/<status folder>/<job>) of the one configured drive. When staging is on, a pending job folder under the staging root (or its plans/addenda subfolder) is also allowed."""
     if folder_id in ALLOWED_FOLDERS:
+        return ""
+    if sl.upload_allowed(drive, folder_id, lambda i: _meta(drive, i, hdr), sl.settings()) == "":
         return ""
     no = "that folder is not on the upload allow-list — refused"
     if not JOB_SUBFOLDERS or not UPLOAD_DRIVE or drive != UPLOAD_DRIVE or not folder_id:

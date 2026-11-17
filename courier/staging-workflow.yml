@@ -41,6 +41,7 @@ jobs:
         run: |
           git config user.name "github-actions"
           git config user.email "github-actions@users.noreply.github.com"
+          mkdir -p staging results   # a run that finds its request already consumed has no folder: still exit 0
           git add -A staging results
           git diff --cached --quiet && exit 0
           git commit -q -m "staged"

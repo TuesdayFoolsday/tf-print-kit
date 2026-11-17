@@ -14,6 +14,9 @@ Two kinds, both handled here (COURIER_PRIVATE_KEY, Microsoft Graph sign-in as in
   verify   {kind, id, drive_id, folder_id, files[{index, item_id, name, bytes, sha256, quickxor?}]}
            Per file: the item is in that folder, has that name and size, and its content (streamed, never held in
            memory) has that SHA-256; when the request carries quickxor it must match Graph's quickXorHash too.
+           Office files (.docx .xlsx …) are the exception: SharePoint stamps its own properties into them after the
+           upload, so size and hash never match. When the item id, folder and name are right, a size or SHA-256
+           difference is accepted and the row says "office_rewritten": true. Other files must match exactly.
 
 Writes <repo>/results/upload-<id>.json ({id, stage session|verify, status ok|failed, finished, files[...]}: no names,
 no URLs; the verify result replaces the session one) and deletes the request. Pickups older than 24 hours are deleted.
@@ -47,6 +50,7 @@ STATUS_FOLDERS = {x.strip() for x in os.environ.get("UPLOAD_STATUS_FOLDERS", "")
 _META: dict = {}   # (drive, item id) -> Graph metadata (or an error string), for this run
 STALE = timedelta(hours=24)
 CHUNK = 8 * 1024 * 1024
+HELD_PLACEHOLDER = "held by an unfinished upload (empty placeholder) — not replaced; retry later"
 
 
 def name_problem(name) -> str:
@@ -131,6 +135,22 @@ def folder_allowed(drive: str, folder_id: str, hdr: dict) -> str:
     return no
 
 
+def _taken(ex, row: dict) -> RuntimeError:
+    """The error for a name that is already in the folder. Puts the existing item's size and id in the result row.
+    A 0-byte item is the empty placeholder an unfinished upload session leaves (hidden from listings until the session
+    expires), so it gets its own message. Nothing is replaced or deleted either way."""
+    try:
+        item = ex.json() if ex.status_code == 200 else {}
+    except ValueError:
+        item = {}
+    if "size" in item:
+        row["existing_bytes"] = int(item["size"])
+        row["existing_item_id"] = item.get("id")
+        if row["existing_bytes"] == 0 and "folder" not in item:
+            return RuntimeError(HELD_PLACEHOLDER)
+    return RuntimeError("already in the folder (not replaced)")
+
+
 def make_sessions(req: dict, tok: str) -> tuple[list[dict], list[dict]]:
     """-> (rows for the sealed pickup (ready files only), result rows without names or URLs)"""
     hdr = {"Authorization": f"Bearer {tok}"}
@@ -149,15 +169,15 @@ def make_sessions(req: dict, tok: str) -> tuple[list[dict], list[dict]]:
                 raise RuntimeError("bad size or sha256 in the request")
             name = urllib.parse.quote(f["name"], safe="")
             base = f"{GRAPH}/drives/{drive}/items/{folder}:/{name}"
-            ex = requests.get(base, headers=hdr, timeout=60)
+            ex = requests.get(base + "?$select=id,size,file,folder", headers=hdr, timeout=60)
             if ex.status_code == 200:
-                raise RuntimeError("already in the folder (not replaced)")
+                raise _taken(ex, row)
             if ex.status_code != 404:
                 raise RuntimeError(f"couldn't check the folder ({ex.status_code})")
             r = requests.post(base + ":/createUploadSession", headers=hdr, timeout=60,
                               json={"item": {"@microsoft.graph.conflictBehavior": "fail"}})
             if r.status_code == 409:
-                raise RuntimeError("already in the folder (not replaced)")
+                raise _taken(requests.get(base + "?$select=id,size,file,folder", headers=hdr, timeout=60), row)
             if r.status_code not in (200, 201):
                 raise RuntimeError(f"upload session refused ({r.status_code}): {r.text[:300]}")
             s = r.json()
@@ -190,14 +210,15 @@ def verify_files(req: dict, tok: str) -> list[dict]:
                 raise RuntimeError("the item is not in the expected folder")
             if meta.get("name") != f["name"]:
                 raise RuntimeError("the item's name is not the expected one")
-            if int(meta.get("size", -1)) != f["bytes"]:
+            office = f["name"].lower().endswith(OFFICE)
+            if int(meta.get("size", -1)) != f["bytes"] and not office:
                 raise RuntimeError(f"size in SharePoint is {meta.get('size')} bytes, expected {f['bytes']}")
             sha, n = stream_sha256(f"{GRAPH}/drives/{drive}/items/{iid}/content", hdr)
             if n != f["bytes"] or sha != f["sha256"]:
-                why = ("; an Office file: SharePoint may have rewritten its properties — not accepted here"
-                       if f["name"].lower().endswith(OFFICE) else "")
-                raise RuntimeError(f"content mismatch: {n} bytes, sha256 {sha}{why}")
-            want = f.get("quickxor")
+                if not f["name"].lower().endswith(OFFICE):
+                    raise RuntimeError(f"content mismatch: {n} bytes, sha256 {sha}")
+                row["office_rewritten"] = True   # same item, folder and name: SharePoint stamped its properties in
+            want = None if row.get("office_rewritten") else f.get("quickxor")
             got = meta.get("file", {}).get("hashes", {}).get("quickXorHash")
             if want and got and got != want:
                 raise RuntimeError(f"quickXorHash differs: SharePoint {got}, box {want}")

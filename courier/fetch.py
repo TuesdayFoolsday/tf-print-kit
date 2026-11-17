@@ -52,6 +52,15 @@ def _get(url: str, hdr: dict) -> requests.Response:
     return r
 
 
+def _path_url(drive: str, path: str) -> str:
+    """Graph URL for a path inside the library. A path that is empty once the slashes are stripped ("/") is the
+    drive root itself, which Graph spells /root (there is no `root:/`)."""
+    clean = path.strip("/")
+    if not clean:
+        return f"{GRAPH}/drives/{drive}/root"
+    return f"{GRAPH}/drives/{drive}/root:/{urllib.parse.quote(clean, safe='/')}"
+
+
 def fetch_one(req: dict, tok: str) -> tuple[dict, dict]:
     """-> (sealed manifest for the chat, result row without names)"""
     hdr = {"Authorization": f"Bearer {tok}"}
@@ -59,13 +68,15 @@ def fetch_one(req: dict, tok: str) -> tuple[dict, dict]:
     if req.get("item_id"):
         meta_url = f"{GRAPH}/drives/{drive}/items/{urllib.parse.quote(req['item_id'], safe='')}"
     elif req.get("path"):
-        meta_url = f"{GRAPH}/drives/{drive}/root:/{urllib.parse.quote(req['path'].strip('/'), safe='/')}"
+        meta_url = _path_url(drive, req["path"])
     else:
         raise RuntimeError("request names no file (item_id or path)")
     meta = _get(meta_url, hdr).json()
     if "file" not in meta:
         raise RuntimeError("that item is a folder, not a file")
     size = int(meta.get("size", -1))
+    if size == 0:
+        raise RuntimeError("file is empty in SharePoint (0 bytes) — often a placeholder left by an unfinished upload")
     if not 0 < size <= MAX_BYTES:
         raise RuntimeError(f"file is {size} bytes (must be 1 … {MAX_BYTES})")
     content_url = f"{GRAPH}/drives/{drive}/items/{meta['id']}/content"
@@ -87,7 +98,7 @@ def _root_url(req: dict) -> str:
     if req.get("item_id"):
         return f"{GRAPH}/drives/{drive}/items/{urllib.parse.quote(req['item_id'], safe='')}"
     if req.get("path"):
-        return f"{GRAPH}/drives/{drive}/root:/{urllib.parse.quote(req['path'].strip('/'), safe='/')}"
+        return _path_url(drive, req["path"])
     raise RuntimeError("request names no folder (item_id or path)")
 
 

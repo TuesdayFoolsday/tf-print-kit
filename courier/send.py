@@ -23,6 +23,7 @@ sealed and removed after delivery; results carry only sizes, fingerprints and it
     python3 courier/send.py upload --repo /tmp/courier --drive <driveId> --folder <folderId> [--branch main] \
         [--timeout 3600] [--chunk-mb 10] [--summary <file.json>] <local file>[=<SharePoint name>] ...   # big files
     python3 courier/send.py upload-wait --repo /tmp/courier [--branch main] [--timeout 3600] <id>   # after exit 2
+    python3 courier/send.py upload-resume --repo /tmp/courier [--branch main] [--timeout 300] <id>  # after a crash
 
 `send` prints the id and one line per file (index, bytes, sha256, name). `wait` exits 0 when every file was
 uploaded and verified, 1 on a failed delivery (reason printed), 2 if no result arrived within the timeout
@@ -50,8 +51,19 @@ sealed upload URLs from <repo>/pickup/up-<id>.tfc (then deletes the pickup from 
 SharePoint in chunks (resuming after errors through the session's nextExpectedRanges; the URLs are pre-authenticated, no
 token is sent, and they are never printed), then pushes a sealed `verify` request and prints one line per file (index,
 bytes, sha256, item id, ✓/✗). Exits 0 all verified, 1 any failed, 2 no result in time (finish with `upload-wait`).
-Nothing existing is overwritten: a name already in the folder fails that file. All pushes go to --branch (default main;
-the clone must have that branch checked out).
+Nothing existing is overwritten: a name already in the folder fails that file (a name "held by an unfinished upload" is an
+empty placeholder an earlier, abandoned upload left; it goes away when its session expires: retry later). All pushes go
+to --branch (default main; the clone must have that branch checked out).
+
+If `upload` can't finish a file (an error, SIGTERM, Ctrl-C) it cancels that file's unused upload session (HTTP DELETE to
+the session URL) so SharePoint keeps no hidden 0-byte placeholder. The one-time key and the state file stay in the keys
+directory until the upload ends. If the process was killed outright (nothing could cancel), `upload-resume <id>` reopens
+the sealed pickup (from the branch tip, or from git history if it was already removed), finishes the PUT of each file not
+yet sent when its session is still alive (from nextExpectedRanges) or reports it expired, then sends the verify request.
+
+The keys directory is ~/.local/state/tf-courier-keys (0700; survives a reboot), or $TF_COURIER_KEYS. Every `git pull
+--rebase` uses --autostash, so a dirty clone doesn't silently stop it. If the pickup is already gone from the branch
+tip (`list`, `fetch`, `upload`), it is read from git history before giving up.
 """
 from __future__ import annotations
 
@@ -62,6 +74,7 @@ import json
 import os
 import secrets
 import shlex
+import signal
 import subprocess
 import sys
 import time
@@ -72,11 +85,31 @@ sys.path.insert(0, str(Path(__file__).parent))
 from box import new_keypair, open_box, seal  # noqa: E402
 
 MAX_BYTES = 25 * 1024 * 1024
-FETCH_KEYS = Path(os.environ.get("TF_COURIER_KEYS", "/tmp/tf-courier-fetch-keys"))
+FETCH_KEYS = Path(os.environ.get("TF_COURIER_KEYS") or Path.home() / ".local" / "state" / "tf-courier-keys")
+_LAST_PULL_ERROR = ""   # stderr of the most recent failed `git pull`, shown if a push gives up
+
+
+def _keys_dir() -> Path:
+    """The one-time-keys directory, created private (0700) if needed. It must survive a reboot: a lost key means
+    the box can neither resume nor cancel an upload session."""
+    FETCH_KEYS.mkdir(mode=0o700, parents=True, exist_ok=True)
+    FETCH_KEYS.chmod(0o700)
+    return FETCH_KEYS
 
 
 def git(repo: Path, *args: str, check: bool = True) -> subprocess.CompletedProcess:
     return subprocess.run(["git", "-C", str(repo), *args], check=check, capture_output=True, text=True)
+
+
+def pull(repo: Path, branch: str = "main") -> subprocess.CompletedProcess:
+    """`git pull --rebase --autostash` (a dirty clone is stashed, not silently refused). A failed pull is remembered
+    for push()'s error message, and a half-done rebase is aborted so the clone isn't left stuck."""
+    global _LAST_PULL_ERROR
+    r = git(repo, "pull", "-q", "--rebase", "--autostash", "origin", branch, check=False)
+    if r.returncode != 0:
+        _LAST_PULL_ERROR = r.stderr.strip() or r.stdout.strip()
+        git(repo, "rebase", "--abort", check=False)
+    return r
 
 
 def push(repo: Path, message: str, branch: str = "main") -> None:
@@ -86,8 +119,9 @@ def push(repo: Path, message: str, branch: str = "main") -> None:
         if r.returncode == 0:
             return
         time.sleep(3 + attempt * 3)
-        git(repo, "pull", "-q", "--rebase", "origin", branch, check=False)
-    sys.exit(f"✗ push failed: {r.stderr.strip()}")
+        pull(repo, branch)
+    pulled = f"\n  last pull error: {_LAST_PULL_ERROR}" if _LAST_PULL_ERROR else ""
+    sys.exit(f"✗ push failed: {r.stderr.strip()}{pulled}")
 
 
 def cmd_keygen(_: argparse.Namespace) -> None:
@@ -122,7 +156,7 @@ def cmd_send(a: argparse.Namespace) -> None:
         lines.append(f"  {i}  {len(data)} bytes  sha256 {sha}  {name}")
     cid = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S-") + secrets.token_hex(3)
     payload = {"id": cid, "drive_id": a.drive, "conflict": "replace" if a.replace else "fail", "files": files}
-    git(repo, "pull", "-q", "--rebase", "origin", "main", check=False)
+    pull(repo, "main")
     (repo / "inbox").mkdir(exist_ok=True)
     (repo / "inbox" / f"{cid}.tfc").write_bytes(seal(json.dumps(payload).encode(), pub))
     git(repo, "add", f"inbox/{cid}.tfc")
@@ -163,7 +197,7 @@ def cmd_fetch(a: argparse.Namespace) -> None:
     repo, out = Path(a.repo), Path(a.out)
     if out.exists():
         sys.exit(f"✗ {out} already exists — pick a new --out path (fetch never overwrites a local file)")
-    FETCH_KEYS.mkdir(mode=0o700, parents=True, exist_ok=True)
+    _keys_dir()
     if a.collect:
         cid = a.collect
         keyfile = FETCH_KEYS / f"{cid}.key"
@@ -179,7 +213,7 @@ def cmd_fetch(a: argparse.Namespace) -> None:
         keyfile.chmod(0o600)
         req = {"id": cid, "kind": "fetch", "drive_id": a.drive, "item_id": a.item or "", "path": a.path or "",
                "reply_pub": pub_once}
-        git(repo, "pull", "-q", "--rebase", "origin", "main", check=False)
+        pull(repo, "main")
         (repo / "fetch").mkdir(exist_ok=True)
         (repo / "fetch" / f"{cid}.tfc").write_bytes(seal(json.dumps(req).encode(),
                                                           (repo / "courier.pub").read_text().strip()))
@@ -201,11 +235,10 @@ def cmd_fetch(a: argparse.Namespace) -> None:
         keyfile.unlink(missing_ok=True)
         print(f"✗ fetch {cid} failed: {res.get('error', 'no reason given')}")
         sys.exit(1)
-    blob = subprocess.run(["git", "-C", str(repo), "show", f"origin/main:pickup/{cid}.tfc"],
-                          capture_output=True, check=False)
-    if blob.returncode != 0:
+    blob = _pickup_blob(repo, "main", f"pickup/{cid}.tfc")
+    if blob is None:
         sys.exit(f"✗ fetch {cid}: result says ok but the sealed copy is gone (collected already, or older than 24 h)")
-    m = json.loads(open_box(blob.stdout, keyfile.read_text()))
+    m = json.loads(open_box(blob, keyfile.read_text()))
     data = base64.b64decode(m["b64"])
     sha = hashlib.sha256(data).hexdigest()
     if m["id"] != cid or len(data) != m["bytes"] or sha != m["sha256"] or sha != res.get("sha256") \
@@ -216,7 +249,7 @@ def cmd_fetch(a: argparse.Namespace) -> None:
     if hashlib.sha256(out.read_bytes()).hexdigest() != sha:
         sys.exit(f"✗ fetch {cid}: the saved file doesn't match — don't use {out}")
     # pickup done: remove the sealed copy from the repo and throw the one-time key away
-    git(repo, "pull", "-q", "--rebase", "origin", "main", check=False)
+    pull(repo, "main")
     if (repo / "pickup" / f"{cid}.tfc").exists():
         git(repo, "rm", "-q", f"pickup/{cid}.tfc")
         push(repo, f"picked up {cid}")
@@ -243,7 +276,7 @@ def _check_branch(repo: Path, branch: str) -> None:
 
 def _send_request(repo: Path, folder: str, cid: str, req: dict, branch: str, label: str) -> None:
     """Seal `req` with courier.pub into <folder>/<cid>.tfc and push it to `branch`."""
-    git(repo, "pull", "-q", "--rebase", "origin", branch, check=False)
+    pull(repo, branch)
     (repo / folder).mkdir(exist_ok=True)
     (repo / folder / f"{cid}.tfc").write_bytes(seal(json.dumps(req).encode(), (repo / "courier.pub").read_text().strip()))
     git(repo, "add", f"{folder}/{cid}.tfc")
@@ -257,6 +290,20 @@ def _show(repo: Path, branch: str, rel: str, binary: bool = False):
     if r.returncode != 0:
         return None
     return r.stdout if binary else r.stdout.decode("utf-8")
+
+
+def _pickup_blob(repo: Path, branch: str, rel: str):
+    """The sealed pickup <rel>: from the tip of origin/<branch>, else (someone removed it already, e.g. an earlier run of
+    the same job) from the last commit in its history that had it. None if neither has it."""
+    blob = _show(repo, branch, rel, binary=True)
+    if blob is not None:
+        return blob
+    sha = git(repo, "log", "-n", "1", "--diff-filter=AM", "--format=%H", f"origin/{branch}", "--", rel,
+              check=False).stdout.strip()
+    if not sha:
+        return None
+    r = subprocess.run(["git", "-C", str(repo), "show", f"{sha}:{rel}"], capture_output=True, check=False)
+    return r.stdout if r.returncode == 0 else None
 
 
 def _wait_json(repo: Path, branch: str, rel: str, timeout: float, poll: float | None = None, accept=lambda d: True):
@@ -275,7 +322,7 @@ def _wait_json(repo: Path, branch: str, rel: str, timeout: float, poll: float | 
 
 def _pickup_done(repo: Path, branch: str, rel: str, label: str) -> None:
     """Remove a collected pickup from the repo (commit + push)."""
-    git(repo, "pull", "-q", "--rebase", "origin", branch, check=False)
+    pull(repo, branch)
     if (repo / rel).exists():
         git(repo, "rm", "-q", rel)
         push(repo, label, branch)
@@ -291,7 +338,7 @@ def cmd_list(a: argparse.Namespace) -> None:
     if not 0 <= a.depth <= 4:
         sys.exit("✗ --depth must be 0 … 4")
     _check_branch(repo, a.branch)
-    FETCH_KEYS.mkdir(mode=0o700, parents=True, exist_ok=True)
+    _keys_dir()
     priv, pub_once = new_keypair()
     cid = _new_id()
     keyfile = FETCH_KEYS / f"{cid}.key"
@@ -310,10 +357,10 @@ def cmd_list(a: argparse.Namespace) -> None:
         keyfile.unlink(missing_ok=True)
         print(f"✗ list {cid} failed: {res.get('error', 'no reason given')}")
         sys.exit(1)
-    blob = _show(repo, a.branch, f"pickup/{cid}.tfc", binary=True)
+    blob = _pickup_blob(repo, a.branch, f"pickup/{cid}.tfc")
     if blob is None:
         keyfile.unlink(missing_ok=True)
-        sys.exit(f"✗ list {cid}: result says ok but the sealed listing is gone")
+        sys.exit(f"✗ list {cid}: result says ok but the sealed listing is gone (not on the branch, not in its history)")
     m = json.loads(open_box(blob, keyfile.read_text()))
     if m.get("id") != cid or len(m.get("entries", [])) != res.get("count"):
         keyfile.unlink(missing_ok=True)
@@ -363,11 +410,22 @@ def _next_expected(url: str, requests) -> int | None:
     return None
 
 
-def put_file(url: str, path: Path, total: int, chunk: int) -> dict:
-    """PUT the file to a pre-authenticated upload URL in chunks (no Authorization header; the URL is never printed).
+def cancel_session(url: str) -> bool:
+    """Drop an upload session (HTTP DELETE to its URL: no Authorization header, the URL is never printed) so SharePoint
+    keeps no hidden 0-byte placeholder under the name. True when the session is gone (cancelled, or already unknown)."""
+    import requests
+    try:
+        return requests.delete(url, timeout=60).status_code in (200, 202, 204, 404)
+    except requests.RequestException:
+        return False
+
+
+def put_file(url: str, path: Path, total: int, chunk: int, start: int = 0) -> dict:
+    """PUT the file to a pre-authenticated upload URL in chunks (no Authorization header; the URL is never printed),
+    beginning at byte `start` (0, or where a live session says it expects the next byte).
     -> the driveItem of the final response. Raises RuntimeError (without the URL) when it can't finish."""
     import requests
-    offset, tries = 0, 0
+    offset, tries = start, 0
     with path.open("rb") as f:
         while True:
             end = min(offset + chunk, total) - 1
@@ -410,6 +468,29 @@ def _print_rows(rows: list[dict]) -> None:
               f"  item {f.get('item_id') or ''}" + (f"  {f['error']}" if f.get("error") else ""))
 
 
+def _state_path(cid: str) -> Path:
+    return FETCH_KEYS / f"up-{cid}.state.json"
+
+
+def _save_state(cid: str, state: dict) -> None:
+    _state_path(cid).write_text(json.dumps(state))   # no URLs, no keys
+
+
+def _end_upload(cid: str) -> None:
+    """The upload is over (verified, failed, or nothing sent): only now do the state and the one-time key go."""
+    _state_path(cid).unlink(missing_ok=True)
+    (FETCH_KEYS / f"up-{cid}.key").unlink(missing_ok=True)
+
+
+def _raise_interrupt(signum, frame):
+    raise KeyboardInterrupt   # SIGTERM is handled like Ctrl-C, so the unfinished sessions get cancelled
+
+
+def _held(error: str) -> bool:
+    """True for the courier's "held by an unfinished upload (empty placeholder)" refusal."""
+    return "held by an unfinished upload" in (error or "")
+
+
 def _upload_finish(a: argparse.Namespace, cid: str, state: dict, timeout: float) -> None:
     """Wait for the verify result, print one line per file, write --summary, exit 0/1/2."""
     res = _wait_json(Path(a.repo), a.branch, f"results/upload-{cid}.json", timeout,
@@ -423,6 +504,7 @@ def _upload_finish(a: argparse.Namespace, cid: str, state: dict, timeout: float)
         if row:
             f["verified"], f["item_id"] = bool(row.get("verified")), row.get("item_id") or f.get("item_id", "")
             f["error"] = row.get("error", f.get("error", ""))
+            f["office_rewritten"] = bool(row.get("office_rewritten"))   # SharePoint stamped its properties: accepted
         else:
             f["verified"] = False
             f["error"] = f.get("error") or "not verified"
@@ -430,18 +512,97 @@ def _upload_finish(a: argparse.Namespace, cid: str, state: dict, timeout: float)
     _write_summary(getattr(a, "summary", ""), cid, state)
     ok = res.get("status") == "ok" and all(f["verified"] for f in state["files"])
     print(f"{'✓ uploaded and verified' if ok else '✗ upload failed'} {cid}")
-    (FETCH_KEYS / f"up-{cid}.state.json").unlink(missing_ok=True)
+    _end_upload(cid)
     sys.exit(0 if ok else 1)
 
 
 def _write_summary(path: str, cid: str, state: dict) -> None:
+    """--summary file: one row per file. held_placeholder is true when the name is held by an earlier unfinished
+    upload (retry later); office_rewritten when SharePoint rewrote an Office file's properties (still verified)."""
     if not path:
         return
-    keys = ("index", "local", "name", "bytes", "sha256", "quickxor", "item_id", "verified", "error")
+    keys = ("index", "local", "name", "bytes", "sha256", "quickxor", "item_id", "verified", "error",
+            "existing_bytes", "existing_item_id")
+    rows = [{**{k: f.get(k, "") for k in keys}, "held_placeholder": _held(f.get("error", "")),
+             "office_rewritten": bool(f.get("office_rewritten"))} for f in state["files"]]
     with open(path, "w", encoding="utf-8") as fh:
-        json.dump({"id": cid, "files": [{k: f.get(k, "") for k in keys} for f in state["files"]]}, fh,
-                  indent=1, ensure_ascii=False)
+        json.dump({"id": cid, "files": rows}, fh, indent=1, ensure_ascii=False)
         fh.write("\n")
+
+
+def _chunk_bytes(mb: float) -> int:
+    chunk = int(mb * 1024 * 1024) // UNIT * UNIT
+    if chunk < UNIT:
+        sys.exit("✗ --chunk-mb is too small (one chunk is at least 320 KiB)")
+    return chunk
+
+
+def _put_all(cid: str, state: dict, sessions: dict, chunk: int, resume: bool = False, prelude=None) -> None:
+    """PUT every file that has a session and isn't sent yet (`resume`: start where a live session says; an expired one
+    is reported). A file that can't be finished has its session cancelled, so no empty placeholder stays behind. On
+    SIGTERM / Ctrl-C (or if `prelude` dies) every unfinished session is cancelled before the interrupt goes on.
+    The state is saved after each file."""
+    files = state["files"]
+    todo = [f for f in files if not f.get("item_id") and sessions.get(f["index"])]
+    for f in files:
+        if not f.get("item_id") and not sessions.get(f["index"]):
+            f["error"] = f.get("error") or "no upload session"
+    finished: set = set()
+    try:
+        if prelude:
+            prelude()
+        for f in todo:
+            url = sessions[f["index"]]["upload_url"]
+            try:
+                print(f"  → {f['index']}  {f['bytes']} bytes")
+                start = 0
+                if resume:
+                    import requests
+                    start = _next_expected(url, requests)
+                    if start is None:
+                        raise RuntimeError("upload session expired or cancelled — run upload again")
+                f["item_id"] = put_file(url, Path(f["local"]), f["bytes"], chunk, start)["id"]
+                f["error"] = ""
+            except Exception as e:
+                f["error"] = str(e) if isinstance(e, RuntimeError) else f"upload failed ({type(e).__name__})"
+                cancel_session(url)
+            finished.add(f["index"])
+            _save_state(cid, state)
+    except BaseException:
+        for f in todo:
+            if f["index"] not in finished:
+                f["error"] = "interrupted — its upload session was cancelled"
+                cancel_session(sessions[f["index"]]["upload_url"])
+        _save_state(cid, state)
+        raise
+
+
+def _send_files_then_verify(a: argparse.Namespace, repo: Path, cid: str, state: dict, sessions: dict, drive: str,
+                            folder: str, collected, resume: bool = False) -> None:
+    """PUT the files, then send the verify request for those that went through and wait for its result."""
+    _put_all(cid, state, sessions, _chunk_bytes(a.chunk_mb), resume, prelude=collected)
+    sent = [f for f in state["files"] if f["item_id"]]
+    if not sent:
+        _print_rows(state["files"])
+        _write_summary(a.summary, cid, state)
+        print(f"✗ upload failed {cid}")
+        _end_upload(cid)
+        sys.exit(1)
+    vreq = {"kind": "verify", "id": cid, "drive_id": drive, "folder_id": folder,
+            "files": [{k: f[k] for k in ("index", "item_id", "name", "bytes", "sha256", "quickxor")} for f in sent]}
+    _send_request(repo, "upload", cid, vreq, a.branch, "upload verify")
+    _upload_finish(a, cid, state, a.timeout)
+
+
+def _note_refused(state: dict, res: dict) -> None:
+    """Copy the session result's per-file refusals (and what already sits under a taken name) into the state."""
+    for row in res.get("files", []):
+        if not row.get("ready"):
+            f = state["files"][row["index"]]
+            f["error"] = row.get("error", "session refused")
+            for k in ("existing_bytes", "existing_item_id"):
+                if k in row:
+                    f[k] = row[k]
 
 
 def cmd_upload(a: argparse.Namespace) -> None:
@@ -449,9 +610,7 @@ def cmd_upload(a: argparse.Namespace) -> None:
     _check_branch(repo, a.branch)
     if a.summary and Path(a.summary).exists():
         sys.exit(f"✗ {a.summary} already exists — pick a new --summary path")
-    chunk = int(a.chunk_mb * 1024 * 1024) // UNIT * UNIT
-    if chunk < UNIT:
-        sys.exit("✗ --chunk-mb is too small (one chunk is at least 320 KiB)")
+    _chunk_bytes(a.chunk_mb)
     files, names = [], set()
     for i, spec in enumerate(a.files):
         local, _, name = spec.partition("=")
@@ -471,9 +630,10 @@ def cmd_upload(a: argparse.Namespace) -> None:
                       "item_id": "", "verified": False, "error": ""})
     cid = _new_id()
     print(f"upload {cid} ({len(files)} file{'s' if len(files) != 1 else ''})")
-    FETCH_KEYS.mkdir(mode=0o700, parents=True, exist_ok=True)
+    _keys_dir()
+    signal.signal(signal.SIGTERM, _raise_interrupt)
     state = {"files": files}
-    (FETCH_KEYS / f"up-{cid}.state.json").write_text(json.dumps(state))   # no URLs, no keys: for upload-wait
+    _save_state(cid, state)   # for upload-wait / upload-resume
     priv, pub_once = new_keypair()
     keyfile = FETCH_KEYS / f"up-{cid}.key"
     keyfile.write_text(priv)
@@ -484,46 +644,54 @@ def cmd_upload(a: argparse.Namespace) -> None:
     res = _wait_json(repo, a.branch, f"results/upload-{cid}.json", min(a.timeout, 1800),
                      accept=lambda d: d.get("stage") in ("session", "verify"))
     if res is None:
-        keyfile.unlink(missing_ok=True)
-        print(f"… no session result for {cid} — nothing was uploaded; run upload again")
+        # the key and state stay: the courier may still answer, and then the session is theirs to finish or cancel
+        print(f"… no session result for {cid} yet — finish or cancel it later with: "
+              f"upload-resume --repo {a.repo} --branch {a.branch} {cid}")
         sys.exit(2)
-    for row in res.get("files", []):
-        if not row.get("ready"):
-            files[row["index"]]["error"] = row.get("error", "session refused")
-    blob = _show(repo, a.branch, f"pickup/up-{cid}.tfc", binary=True)
-    sessions = {}
+    _note_refused(state, res)
+    sessions, blob = {}, _pickup_blob(repo, a.branch, f"pickup/up-{cid}.tfc")
     if blob is not None:
-        m = json.loads(open_box(blob, keyfile.read_text()))
-        sessions = {f["index"]: f for f in m["files"]}
-        _pickup_done(repo, a.branch, f"pickup/up-{cid}.tfc", f"picked up upload {cid}")
-    keyfile.unlink(missing_ok=True)
-    for f in files:
-        sess = sessions.get(f["index"])
-        if not sess:
-            f["error"] = f["error"] or "no upload session"
-            continue
-        try:
-            print(f"  → {f['index']}  {f['bytes']} bytes")
-            item = put_file(sess["upload_url"], Path(f["local"]), f["bytes"], chunk)
-            f["item_id"] = item["id"]
-        except Exception as e:
-            f["error"] = str(e) if isinstance(e, RuntimeError) else f"upload failed ({type(e).__name__})"
-    sent = [f for f in files if f["item_id"]]
-    if not sent:
-        _print_rows(files)
-        _write_summary(a.summary, cid, state)
-        print(f"✗ upload failed {cid}")
-        (FETCH_KEYS / f"up-{cid}.state.json").unlink(missing_ok=True)
-        sys.exit(1)
-    (FETCH_KEYS / f"up-{cid}.state.json").write_text(json.dumps(state))
-    vreq = {"kind": "verify", "id": cid, "drive_id": a.drive, "folder_id": a.folder,
-            "files": [{k: f[k] for k in ("index", "item_id", "name", "bytes", "sha256", "quickxor")} for f in sent]}
-    _send_request(repo, "upload", cid, vreq, a.branch, "upload verify")
-    _upload_finish(a, cid, state, a.timeout)
+        sessions = {f["index"]: f for f in json.loads(open_box(blob, keyfile.read_text()))["files"]}
+    _send_files_then_verify(
+        a, repo, cid, state, sessions, a.drive, a.folder,
+        collected=lambda: _pickup_done(repo, a.branch, f"pickup/up-{cid}.tfc", f"picked up upload {cid}"))
+
+
+def cmd_upload_resume(a: argparse.Namespace) -> None:
+    """After a crash / reboot / kill: reopen the sealed pickup (branch tip, or git history if already removed), finish
+    the PUT of each file not yet sent while its session is alive (else report it expired and cancel it), then send the
+    verify request as `upload` does."""
+    repo, cid = Path(a.repo), a.id
+    _check_branch(repo, a.branch)
+    keyfile = FETCH_KEYS / f"up-{cid}.key"
+    if not _state_path(cid).exists():
+        sys.exit(f"✗ no saved state for {cid} on this machine — run upload again")
+    state = json.loads(_state_path(cid).read_text())
+    res = _wait_json(repo, a.branch, f"results/upload-{cid}.json", a.timeout,
+                     accept=lambda d: d.get("stage") in ("session", "verify"))
+    if res is None:
+        print(f"… the courier hasn't answered {cid} yet — try upload-resume again later")
+        sys.exit(2)
+    if res.get("stage") == "verify":
+        _upload_finish(a, cid, state, 0)
+    signal.signal(signal.SIGTERM, _raise_interrupt)
+    _note_refused(state, res)
+    blob = _pickup_blob(repo, a.branch, f"pickup/up-{cid}.tfc")
+    if blob is None and any(r.get("ready") for r in res.get("files", [])):
+        _end_upload(cid)
+        sys.exit(f"✗ upload {cid}: the sealed upload sessions are gone — run upload again")
+    if blob is not None and not keyfile.exists():
+        sys.exit(f"✗ no one-time key for {cid} on this machine — its sessions can't be opened; run upload again")
+    manifest = json.loads(open_box(blob, keyfile.read_text())) if blob is not None else {}
+    sessions = {f["index"]: f for f in manifest.get("files", [])}
+    drive, folder = manifest.get("drive_id", ""), manifest.get("folder_id", "")
+    _send_files_then_verify(
+        a, repo, cid, state, sessions, drive, folder, resume=True,
+        collected=lambda: _pickup_done(repo, a.branch, f"pickup/up-{cid}.tfc", f"picked up upload {cid}"))
 
 
 def cmd_upload_wait(a: argparse.Namespace) -> None:
-    sf = FETCH_KEYS / f"up-{a.id}.state.json"
+    sf = _state_path(a.id)
     state = json.loads(sf.read_text()) if sf.exists() else None
     res = _wait_json(Path(a.repo), a.branch, f"results/upload-{a.id}.json", a.timeout,
                      accept=lambda d: d.get("stage") == "verify")
@@ -545,7 +713,7 @@ def cmd_directory(a: argparse.Namespace) -> None:
     if len(rows) < 2 or "firm_id" not in rows[0] or "contact_name" not in rows[0]:
         sys.exit("✗ not written: the CSV needs Directory.csv's header row (firm_id, contact_name, …) and at least one contact")
     repo = Path(a.repo)
-    git(repo, "pull", "-q", "--rebase", "origin", "main", check=False)
+    pull(repo, "main")
     dest = repo / "trigger" / "directory_add.csv"
     dest.parent.mkdir(exist_ok=True)
     dest.write_text(src.read_text(encoding="utf-8-sig"), encoding="utf-8")
@@ -569,7 +737,7 @@ def _push_trigger(a: argparse.Namespace, name: str, required: tuple[str, ...], l
     if missing:
         sys.exit(f"✗ not written: missing {', '.join(missing)}")
     repo = Path(a.repo)
-    git(repo, "pull", "-q", "--rebase", "origin", "main", check=False)
+    pull(repo, "main")
     dest = repo / "trigger" / name
     dest.parent.mkdir(exist_ok=True)
     dest.write_text(json.dumps(req, indent=1, ensure_ascii=False) + "\n", encoding="utf-8")
@@ -602,7 +770,7 @@ def cmd_tick(a: argparse.Namespace) -> None:
     """Start the Operations robot now (System Rules B18): the hourly run ticks at its start, the nightly run with
     --nightly. GitHub's own schedule is only a backup; it comes hours late or not at all."""
     repo = Path(a.repo)
-    git(repo, "pull", "-q", "--rebase", "origin", "main", check=False)
+    pull(repo, "main")
     dest = repo / "trigger" / "tick.txt"
     dest.parent.mkdir(exist_ok=True)
     kind = "nightly" if a.nightly else "hourly"
@@ -640,6 +808,8 @@ def cmd_staging(a: argparse.Namespace) -> None:
         if a.purpose not in ("pass", "cleanup"):
             sys.exit("✗ delete needs --purpose pass or cleanup")
         req.update(item_ids=ids, purpose=a.purpose)
+    if a.staging_cmd in ("mkdir", "move") and req.get("name") and name_problem(req["name"]):
+        sys.exit(f"✗ {name_problem(req['name'])} — nothing was sent")   # the Action would refuse it after a full round trip
     if a.out and Path(a.out).exists():
         sys.exit(f"✗ {a.out} already exists — pick a new --out path")
     print(f"staging {a.staging_cmd} {cid}")
@@ -710,6 +880,14 @@ def main() -> None:
     up.add_argument("--summary", default="")
     up.add_argument("files", nargs="+")
     up.set_defaults(fn=cmd_upload)
+    ur = sub.add_parser("upload-resume")
+    ur.add_argument("--repo", required=True)
+    ur.add_argument("--branch", default="main")
+    ur.add_argument("--timeout", type=int, default=300)
+    ur.add_argument("--chunk-mb", type=float, default=10)
+    ur.add_argument("--summary", default="")
+    ur.add_argument("id")
+    ur.set_defaults(fn=cmd_upload_resume)
     uw = sub.add_parser("upload-wait")
     uw.add_argument("--repo", required=True)
     uw.add_argument("--branch", default="main")
@@ -757,7 +935,10 @@ def main() -> None:
     dl.add_argument("--item", dest="items", action="append", required=True)
     dl.add_argument("--purpose", required=True, choices=["pass", "cleanup"])
     a = ap.parse_args()
-    a.fn(a)
+    try:
+        a.fn(a)
+    except KeyboardInterrupt:
+        sys.exit("✗ interrupted — unfinished upload sessions were cancelled; the state is kept (see upload-resume)")
 
 
 if __name__ == "__main__":

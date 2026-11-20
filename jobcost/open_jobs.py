@@ -78,17 +78,35 @@ def read_billing(path):
         return out
     import xlrd
     s = xlrd.open_workbook(path).sheet_by_index(0)
-    head = [str(v).replace("\n", " ").strip().lower() for v in s.row_values(1)]
-    try:
-        ci, ti, bi = head.index("contract"), head.index("total cost"), head.index("billed amount")
-    except ValueError:
-        raise SystemExit(f"✗ {path}: not the JC Cost and Revenue layout (header row 2: {head})")
-    for r in range(2, s.nrows):
+    found = billing_header(s)
+    if not found:
+        head = [str(v).replace("\n", " ").strip().lower() for v in s.row_values(min(1, s.nrows - 1))] if s.nrows else []
+        raise SystemExit(f"✗ {path}: not the JC Cost and Revenue layout (no Contract / Total Cost / Billed Amount "
+                         f"header in the first 30 rows; row 2: {head})")
+    first, ci, ti, bi = found
+    for r in range(first, s.nrows):
         row = s.row_values(r)
         m = re.match(r"^\s*(\d{4})-", str(row[ci]))
         if m:
             out[m.group(1)] = (num(row[ti]), num(row[bi]))
     return out
+
+
+def billing_header(s, scan=30):
+    """Find the JC Cost and Revenue column header: (first data row, contract col, total cost col, billed col).
+    Amber's exports had it on row 2; the courier's Export (System Rules B21) puts report title lines above it, and
+    a two-line heading ("Total" / "Cost") can sit in two rows, so each row is tried alone and joined with the next."""
+    norm = lambda v: re.sub(r"\s+", " ", str(v)).strip().lower()
+    rows = [[norm(v) for v in s.row_values(r)] for r in range(min(scan, s.nrows))]
+    for r, row in enumerate(rows):
+        cands = [(row, r + 1)]
+        if r + 1 < len(rows):
+            nxt = rows[r + 1]
+            cands.append(([(a + " " + b).strip() for a, b in zip(row, nxt + [""] * (len(row) - len(nxt)))], r + 2))
+        for head, first in cands:
+            if "contract" in head and "total cost" in head and "billed amount" in head:
+                return first, head.index("contract"), head.index("total cost"), head.index("billed amount")
+    return None
 
 
 def read_contracts(path):

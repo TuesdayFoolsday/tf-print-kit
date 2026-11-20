@@ -142,3 +142,40 @@ class OpenJobs(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class BillingHeader(unittest.TestCase):
+    """JC Cost and Revenue .xls: Amber's layout (header on row 2) and the courier's Export (title lines above,
+    heading split over two rows) both read the same (System Rules B21)."""
+
+    def xls(self, path, rows):
+        try:
+            import xlwt
+        except ImportError:
+            self.skipTest("xlwt not installed")
+        wb = xlwt.Workbook(); ws = wb.add_sheet("s")
+        for r, row in enumerate(rows):
+            for c, v in enumerate(row):
+                if v != "":
+                    ws.write(r, c, v)
+        wb.save(str(path))
+        return str(path)
+
+    def test_header_on_row_two(self):
+        with tempfile.TemporaryDirectory() as d:
+            p = self.xls(Path(d) / "a.xls", [["JC Cost and Revenue"], ["Contract", "Description", "Total Cost", "Billed Amount"],
+                                             [" 2604-", "Pier A", 1000.5, 800]])
+            self.assertEqual(oj.read_billing(p), {"2604": (1000.5, 800)})
+
+    def test_title_lines_and_two_row_heading(self):
+        with tempfile.TemporaryDirectory() as d:
+            p = self.xls(Path(d) / "b.xls", [["", "", "JC Cost and Revenue"], ["", "", "All Contracts"], ["JC Company: 1"],
+                                             ["", "", "", "Total", "Billed"], ["Contract", "Description", "", "Cost", "Amount"],
+                                             [" 2604-", "Pier A", "", 1000.5, 800], ["Grand Totals", "", "", 1000.5, 800]])
+            self.assertEqual(oj.read_billing(p), {"2604": (1000.5, 800)})
+
+    def test_not_billing(self):
+        with tempfile.TemporaryDirectory() as d:
+            p = self.xls(Path(d) / "c.xls", [["JC Detail"], ["nothing here"]])
+            with self.assertRaises(SystemExit):
+                oj.read_billing(p)

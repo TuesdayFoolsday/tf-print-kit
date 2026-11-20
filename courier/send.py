@@ -588,10 +588,41 @@ def _send_files_then_verify(a: argparse.Namespace, repo: Path, cid: str, state: 
         print(f"✗ upload failed {cid}")
         _end_upload(cid)
         sys.exit(1)
-    vreq = {"kind": "verify", "id": cid, "drive_id": drive, "folder_id": folder,
-            "files": [{k: f[k] for k in ("index", "item_id", "name", "bytes", "sha256", "quickxor")} for f in sent]}
+    vfiles = []
+    for f in sent:
+        row = {k: f[k] for k in ("index", "item_id", "name", "bytes", "sha256", "quickxor")}
+        fp = _office_fingerprint(repo, f["local"], f["bytes"])
+        if fp:
+            row["fingerprint"] = fp   # SharePoint stamps Office files; the robot checks every content part against this
+        vfiles.append(row)
+    vreq = {"kind": "verify", "id": cid, "drive_id": drive, "folder_id": folder, "files": vfiles}
     _send_request(repo, "upload", cid, vreq, a.branch, "upload verify")
     _upload_finish(a, cid, state, a.timeout)
+
+
+OFFICE_EXT = (".docx", ".docm", ".xlsx", ".xlsm", ".pptx", ".pptm", ".doc", ".dot", ".xls", ".xlt", ".ppt", ".pot")
+
+
+def _office_fingerprint(repo: Path, local: str, size: int) -> dict | None:
+    """Content fingerprint of an Office file (courier/verify.py, read from the courier clone so both sides use the
+    same code). None for other files, files over 500 MB, or an old courier clone without verify.py."""
+    if not local.lower().endswith(OFFICE_EXT) or size > 500 * 1024 * 1024:
+        return None
+    src = Path(repo) / "courier" / "verify.py"
+    if not src.is_file():
+        return None
+    import importlib.util
+    spec = importlib.util.spec_from_file_location("courier_verify", src)
+    mod = importlib.util.module_from_spec(spec)
+    try:
+        spec.loader.exec_module(mod)
+        fingerprint = mod.fingerprint
+    except Exception:  # noqa: BLE001
+        return None
+    try:
+        return fingerprint(Path(local).read_bytes())
+    except Exception:  # noqa: BLE001 - no fingerprint; the robot then refuses a changed Office file and says why
+        return None
 
 
 def _note_refused(state: dict, res: dict) -> None:

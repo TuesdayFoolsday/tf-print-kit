@@ -245,7 +245,7 @@ def cmu_quantities(lines, keys):
     return out, pooled
 
 
-def compute(path, map_path, project="", bid_id="", wall_grout=None):
+def compute(path, map_path, project="", bid_id="", wall_grout=None, source="tradesmen"):
     rules = load_map(map_path)
     rows, g = load(path)
     B = {b: dict(sf=0.0, pieces=0.0, labor=0.0, material=0.0, mandays=0.0, **{f"labor_{k}": 0.0 for k in KINDS})
@@ -308,7 +308,7 @@ def compute(path, map_path, project="", bid_id="", wall_grout=None):
     mat_factor = (g.get("mat_total", 0) * (g.get("material", mat_sum) / (g.get("material", mat_sum) + g.get("misc_taxable", 0)))) / mat_sum if mat_sum else 0
     misc_taxable_sell = g.get("mat_total", 0) - mat_sum * mat_factor
 
-    row = {"bid_id": bid_id, "project": project or g["job_title"], "job_number": g["job_number"], "source": "tradesmen",
+    row = {"bid_id": bid_id, "project": project or g["job_title"], "job_number": g["job_number"], "source": source,
            "bid_price": round(g.get("bid_price", 0)), "oh_pct": g.get("oh_pct", 0), "profit_pct": g.get("profit_pct", 0),
            "tax_rate": g.get("tax_rate", 0), "labor_load_factor": round(labor_factor, 4), "material_load_factor": round(mat_factor, 4),
            "equipment_sell": round(g.get("equip_total", 0)), "misc_sell": round(g.get("misc_total", 0) + misc_taxable_sell),
@@ -354,7 +354,7 @@ def compute(path, map_path, project="", bid_id="", wall_grout=None):
         problems.append(f"Grand Totals parts {parts:,.0f} vs bid price {g.get('bid_price', 0):,.0f}")
     row["reconciles"] = "n" if problems else "y"
     row["reconcile_notes"] = "; ".join(problems)
-    row["mandays_total"] = round(sum(r["mandays"] for r in rows), 1)   # Tradesmen man-days = production-mason days
+    row["mandays_total"] = round(sum(r["mandays"] for r in rows), 1)   # production man-days (Tradesmen: production-mason days; system: same, plus task crews)
     # Whole-crew hours from the Crew Page (what job cost compares against: Vista hours are the whole crew)
     h = g.get("hours", {})
     for k, col in (("Bricklayer", "bricklayer"), ("Forman", "foreman"), ("Labor", "laborer"), ("Operator", "operator")):

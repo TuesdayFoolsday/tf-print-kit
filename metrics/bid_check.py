@@ -50,9 +50,22 @@ def main():
     ap.add_argument("--grout-walls", default="", help="by-wall export: 'Wall name=32oc; Other wall=full' (David)")
     ap.add_argument("--conditions", default="", help="the bid's '... - Wall Conditions.md' (07 Estimate)")
     ap.add_argument("--conditions-url", default="", help="its SharePoint webUrl, stored as conditions_file")
+    ap.add_argument("--source", default="tradesmen", choices=["tradesmen", "system"],
+                    help="system = compact JSON from _Knowledge/Takeoff Calculator/system_metrics.py (System Rules A35)")
+    ap.add_argument("--bid-id", default="")
     a = ap.parse_args()
     wg = dict(x.split("=", 1) for x in (p.strip() for p in a.grout_walls.split(";")) if "=" in x)
-    r = m.compute(a.export, a.cost_map, a.project, wall_grout={k.strip(): v.strip().lower() for k, v in wg.items()})
+    if a.source == "system" and not a.export.lower().endswith(".json"):
+        sys.exit("STOP: --source system needs the compact JSON from system_metrics.py")
+    r = m.compute(a.export, a.cost_map, a.project, a.bid_id, wall_grout={k.strip(): v.strip().lower() for k, v in wg.items()},
+                  source=a.source)
+    if a.source == "system":
+        import json as _json
+        _c = _json.load(open(a.export, encoding="utf-8"))
+        if _c.get("source") != "system":
+            sys.exit("STOP: this JSON was not made by system_metrics.py (no source=system)")
+        r["estimator"] = "FB system (/takeoff)"
+        r["source_detail"] = _c.get("source_detail", "")
     raw, (lf, mf), v2 = r.pop("_units_raw"), r.pop("_factors"), r.pop("_v2", {})
     nwalls = r.pop("walls", 0)
     qnote = r.pop("_qty_note", "")
@@ -66,7 +79,7 @@ def main():
                 r[k] = v
         if not a.grout and not a.grout_walls and cond.get("grout"):
             a.grout = "; ".join(f"{k[1]}:{cond['grout']}" for k in raw if k[0].startswith("cmu") and len(k) == 2)
-    r["metrics_id"] = ml.make_id("tradesmen", r.get("job_number", ""), r["project"])
+    r["metrics_id"] = ml.make_id(a.source, r.get("job_number", ""), r["project"])
     r["estimate_status"] = a.status
     hist = []
     if os.path.exists(a.history):
@@ -78,8 +91,9 @@ def main():
     if prev and prev.get("bid_id") and not r.get("bid_id"):
         r["bid_id"] = prev["bid_id"]
     rng = [h for h in hist if h.get("estimate_status", "final") == "final"]
-    urows = U.finish(raw, r["metrics_id"], r["project"], "tradesmen", a.status, lf, mf, grout_spec=a.grout,
-                     basis=("Tradesmen by wall (grout per wall, David)" if nwalls else "Tradesmen line items by size")
+    urows = U.finish(raw, r["metrics_id"], r["project"], a.source, a.status, lf, mf, grout_spec=a.grout,
+                     basis=("FB system estimate (/takeoff), line items by size" if a.source == "system" else
+                            "Tradesmen by wall (grout per wall, David)" if nwalls else "Tradesmen line items by size")
                            + (f"; {qnote}" if qnote else ""),
                      notes=r["notes"], v2=v2)
     uhist = []

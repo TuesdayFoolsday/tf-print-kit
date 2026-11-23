@@ -8,7 +8,8 @@ Unattended runs never rewrite 'Bid Metrics 2026.csv'. Each change is one small J
         --set notes="radius wall" [--set col=value ...] [--json patch.json]
     python3 metrics/metrics_log.py show  "Bid Metrics 2026.csv" <pending_dir> <metrics_id>
 
-metrics_id: 'tm-<job number>' for a Tradesmen estimate, 'in-<project slug>' for an India workbook estimate
+metrics_id: 'tm-<job number>' for a Tradesmen estimate, 'in-<project slug>' for an India workbook estimate,
+'sy-<project slug>' for a /takeoff system estimate
 (make_id below). A metrics_id not in the base is a new row (needs project, source, estimate_status).
 estimate_status: final (the estimate behind the price that went out; sets the Bid Check range) · iteration
 (an earlier or alternate pricing) · draft (unfinished). Values are text; columns must exist in the base header.
@@ -21,7 +22,7 @@ import bid_log as bl   # load / write / read_patches / now_ct
 
 KEY = "metrics_id"
 STATUSES = {"final", "iteration", "draft", ""}
-SOURCES = {"tradesmen", "india", ""}
+SOURCES = {"tradesmen", "india", "system", ""}   # system = a /takeoff estimate priced by the FB system (System Rules A35, v1.67)
 # Columns added by Bid Metrics v2 (System Rules v1.29). A base file written before v2 lacks them: merge adds them
 # (old rows read blank) and patches may set them.
 V2_COLS = {"metrics_id": ["max_wall_height_ft", "openings_per_100sf", "chase_walls", "access", "wages_bumped",
@@ -45,7 +46,7 @@ def make_id(source, job_number="", project=""):
     if source == "tradesmen" and str(job_number).strip():
         return f"tm-{str(job_number).strip()}"
     slug = re.sub(r"[^a-z0-9]+", "-", project.lower()).strip("-")[:40]
-    return f"{'tm' if source == 'tradesmen' else 'in'}-{slug}"
+    return f"{ {'tradesmen': 'tm', 'system': 'sy'}.get(source, 'in') }-{slug}"
 
 
 def validate(p, header, base_ids):
@@ -66,7 +67,7 @@ def validate(p, header, base_ids):
     if s.get("estimate_status") not in (None, *STATUSES):
         errs.append(f"estimate_status {s['estimate_status']!r} not final/iteration/draft")
     if s.get("source") not in (None, *SOURCES):
-        errs.append(f"source {s['source']!r} not tradesmen/india")
+        errs.append(f"source {s['source']!r} not tradesmen/india/system")
     if p.get(KEY) not in base_ids:
         for k in ("project", "source", "estimate_status"):
             if not s.get(k):
